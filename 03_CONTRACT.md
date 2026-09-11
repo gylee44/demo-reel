@@ -1,6 +1,7 @@
 # 웹앱 데모 영상 자동 생성 — 공유 계약 초안
 
-작성일: 2026-09-09 · 계약 제안: v0.1 · 상태: 미구현·팀 검토 전
+> 2026-09-11 갱신: 사용자가 실서비스 전환을 승인했습니다. 현재 구현·배포 경계는 [README](README.md)와 [DEPLOYMENT](DEPLOYMENT.md), 검증 사실은 [TESTING](TESTING.md)을 따릅니다. 아래 v0.1 문서의 미확정·PoC 상태는 작성 당시 기록입니다.
+작성일: 2026-09-09 · 계약: v0.1 · 고정 PoC 구현. 실행 가능한 스키마는 `packages/contracts/src/index.ts`, 실제 API는 `apps/api/src/app.ts` 참조
 
 이 문서는 Plan·API·상태 모델의 유일한 설계 정의다. [요구사항](01_REQUIREMENTS.md)과 [시스템 설계](02_ARCHITECTURE.md)는 이를 참조한다. 구현 시 `packages/contracts/`의 런타임 스키마에서 타입·API 명세를 생성하고 이 문서를 같은 변경으로 갱신한다. 설명 문서와 코드가 따로 계약을 발전시키지 않는다. 공유 계약 변경은 구현 전에 A/B에 영향을 공유한다.
 
@@ -204,3 +205,14 @@ RuntimeSession과 원본 비밀값은 공개 API 응답 타입에 포함하지 �
 - 예제만 통과했다고 실제 외부 앱 실행까지 검증됐다고 보지 않는다.
 - 필드 추가·삭제·의미 변경은 A/B 영향과 하위 호환성을 먼저 공유한다.
 - 구현 전 남은 작업은 실행 가능한 스키마·API 명세·공통 예제를 만드는 것이다. 이 문서만으로 타입 검사나 런타임 검증을 수행한 것은 아니다.
+
+## 서비스 전환 추가 계약 (2026-09-11)
+
+- `GET /api/v1/capabilities`: `mode: service|poc`, `ready`, `auth: email-password`. 서비스 모드에서 고정 결과로 대체하지 않는다.
+- `POST /api/v1/account/register`, `/login`: `{email,password}`. 서버 세션 쿠키를 발급한다. `/logout`은 취소, `GET /account/me`는 현재 사용자, `POST /account/password`는 `{currentPassword,newPassword}`이며 기존 모든 세션을 취소한다.
+- 서비스 모드의 모든 프로젝트·계획·작업·파일 API는 회원 세션이 필요하다. `GET /api/v1/projects`는 해당 계정의 최근 프로젝트와 작업 참조를 반환한다.
+- 프로젝트 생성은 `allowedOrigins`(전체 최대 5개), `discoveryUrls`(추가 최대 5개)를 받는다. 공개 HTTPS와 연결 origin 범위만 허용한다.
+- 로그인 정보는 `packages/contracts/src/connection.ts`의 `AuthInputSchema`를 따른다. 폼 방식은 로그인 URL·사용자/암호/제출 대상·성공 URL/대상을 포함한 `profile`이 필수다. 세션 방식은 `verifyUrl`, `successTarget`, 쿠키/localStorage 상태가 필요하다. 이 설정과 비밀값은 암호화해 보관하고 Plan에는 authRef만 연결한다.
+- 계획 요청의 authRef를 생략하면 인증 없는 공개 화면 모드가 된다. 키·워커 준비 누락은 `SERVICE_NOT_READY`(503)로 반환한다.
+- 파일 메타데이터는 내부 `objectKey`를 가질 수 있다. 다운로드 API는 소유권·보관 기한 확인 후 5분 만료 S3 서명 URL을 반환한다.
+- 모델 출력은 관측된 locator 목록과 실행 정책을 검증한다. 수정한 locator가 원래 관측 근거와 다르면 재검증에서 차단한다.

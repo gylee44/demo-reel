@@ -1,23 +1,101 @@
-const app=document.querySelector('#app');
-const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,body){const r=await fetch('/demo-api'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok){if(r.status===401&&path!=='/login'){location.href='/login';return;}throw Error(data.message);}return data;}
-function shell(body){return `<aside><a class="brand" href="/dashboard"><span class="mark">W</span>워크스페이스</a><div class="space"><span class="avatar">P</span><div>포트폴리오 프로젝트<small>개인 작업 공간</small></div></div><p class="nav-label">WORKSPACE</p><nav><a href="/dashboard">◫ &nbsp; 프로젝트 현황</a><a href="/tasks">☷ &nbsp; 모든 업무</a><a href="/completed">✓ &nbsp; 완료한 업무</a></nav><div class="aside-bottom"><span class="live-dot"></span> 테스트 데이터로 시연 중</div></aside><div class="main"><header><span>내 작업 공간 <b> / </b> 포트폴리오 프로젝트</span><div class="user"><span>김데모</span><span class="profile">김</span></div></header><main>${body}</main><footer>WORKSPACE &nbsp; / &nbsp; YOUR WORK, IN FOCUS.</footer></div>`;}
-const card=t=>`<a class="task-card" href="/tasks/${encodeURIComponent(t.id)}"><span class="task-icon ${t.done?'done':''}">${t.done?'✓':'•'}</span><div><h3>${escape(t.title)}</h3><p>${escape(t.description)}</p></div><span class="badge ${t.done?'green':''}">${t.done?'완료':'진행 중'}</span></a>`;
-async function render(){
- if(location.pathname==='/login'||location.pathname==='/'){
- app.innerHTML=`<div class="login"><div class="login-art"><span class="mark">W</span><h1>작업이 모이면,<br>프로젝트가 됩니다.</h1><p>하나의 공간에서 계획하고, 실행하고, 완성하세요.</p><div class="art-card"><span class="live-dot"></span> 작은 실행이 만드는 큰 변화<div class="art-lines"><i></i><i></i><i></i></div></div><small>WORKSPACE · DEMO EDITION</small></div><div class="login-form"><p class="eyebrow">WELCOME BACK</p><h2>내 작업 공간으로</h2><p>테스트 계정으로 로그인해 주세요.</p><form id="login"><label>이메일<input name="username" type="email" autocomplete="username" required></label><label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">로그인</button><p role="alert" id="error"></p></form><div class="hint">시연용 테스트 앱입니다. 실제 개인정보를 입력하지 마세요.</div></div></div>`;
- document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{await api('/login',Object.fromEntries(f));location.href='/dashboard';}catch(err){document.querySelector('#error').textContent=err.message;}};return;}
- const me=await api('/me');if(!me)return;const data=await api('/tasks');if(!data)return;const tasks=data.tasks,pending=tasks.filter(t=>!t.done),done=tasks.filter(t=>t.done);
- if(location.pathname==='/dashboard')app.innerHTML=shell(`<div class="title-row"><div><p class="eyebrow">PROJECT OVERVIEW</p><h1>프로젝트 현황</h1><p>안녕하세요, 데모님. 오늘도 한 걸음 더 나아가 볼까요?</p></div><a class="primary" href="/tasks/new">＋ 새 업무 추가</a></div><div class="stats"><article><span>전체 업무</span><strong>${tasks.length}<small>개</small></strong><p>아이디어를 실행으로</p></article><article><span>진행 중</span><strong>${pending.length}<small>개</small></strong><p><span class="live-dot"></span> 차근차근 진행하고 있어요</p></article><article class="accent-stat"><span>완료한 업무</span><strong>${done.length}<small>개</small></strong><p>잘하고 있어요. 계속 이어가세요.</p></article></div><div class="section-title"><h2>지금 집중할 업무</h2><a href="/tasks">모든 업무 보기 <span>↗</span></a></div><div class="tasks">${pending.map(card).join('')}</div><div class="note"><span>✦</span><div><b>작은 완료를 쌓아가세요.</b><p>오늘 한 가지를 끝내는 것만으로도 프로젝트는 앞으로 나아갑니다.</p></div></div>`);
- else if(location.pathname==='/tasks/new'){
- app.innerHTML=shell(`<p class="eyebrow">CREATE A TASK</p><h1>새 업무 추가</h1><p>해야 할 일을 구체적으로 적어보세요.</p><form id="new-task" class="editor"><label>업무 제목<input name="title" placeholder="어떤 일을 해야 하나요?" required maxlength="100"></label><label>업무 설명<textarea name="description" rows="5" placeholder="작업의 목적과 완료 기준을 적어주세요."></textarea></label><div class="form-foot"><span>추가된 업무는 진행 중 목록에 표시됩니다.</span><button class="primary">업무 저장</button></div><p role="alert" id="error"></p></form>`);
- document.querySelector('#new-task').onsubmit=async e=>{e.preventDefault();try{const t=await api('/tasks',Object.fromEntries(new FormData(e.target)));location.href='/tasks/'+t.id;}catch(err){document.querySelector('#error').textContent=err.message;}};
- }else if(location.pathname==='/tasks'||location.pathname==='/completed'){
- const completed=location.pathname==='/completed';app.innerHTML=shell(`<div class="title-row"><div><p class="eyebrow">${completed?'COMPLETED':'ALL TASKS'}</p><h1>${completed?'완료한 업무':'모든 업무'}</h1><p>${completed?'완료한 일들이 프로젝트의 성장을 보여줍니다.':'진행 상황을 확인하고 다음 작업을 시작하세요.'}</p></div><a class="primary" href="/tasks/new">＋ 새 업무 추가</a></div><div class="list-count">${completed?done.length:tasks.length}개의 업무</div><div class="tasks">${(completed?done:tasks).map(card).join('')}</div>`);
- }else{
- const task=tasks.find(t=>t.id===decodeURIComponent(location.pathname.split('/').pop()));if(!task){app.innerHTML=shell('<h1>업무를 찾을 수 없습니다.</h1>');return;}
- app.innerHTML=shell(`<a class="back" href="/tasks">← 모든 업무</a><article class="detail"><p class="eyebrow">TASK DETAILS</p><h1>${escape(task.title)}</h1><span ${task.done?'data-testid="done-badge"':''} class="badge ${task.done?'green':''}">${task.done?'완료':'진행 중'}</span><hr><p class="detail-description">${escape(task.description)}</p><div class="detail-meta"><span>담당자 <b>김데모</b></span><span>프로젝트 <b>포트폴리오</b></span></div><div class="detail-actions">${task.done?'<div class="success"><span>✓</span><div><b>업무를 완료했어요!</b><p>한 걸음 더 앞으로 나아갔습니다.</p></div></div><a class="primary" href="/completed">완료 목록 보기</a>':'<span>작업이 끝났다면 완료로 표시해 주세요.</span><button class="primary" id="complete">완료 처리</button>'}</div></article>`);
- const btn=document.querySelector('#complete');if(btn)btn.onclick=async()=>{btn.disabled=true;await api('/tasks/'+task.id+'/complete',{});await render();};
- }
+const app = document.querySelector('#app');
+const escape = (s) =>
+  String(s).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+  );
+async function api(path, body) {
+  const r = await fetch('/demo-api' + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    if (r.status === 401 && path !== '/login') {
+      location.href = '/login';
+      return;
+    }
+    throw Error(data.message);
+  }
+  return data;
 }
-render().catch(e=>{const p=document.createElement('p');p.textContent=e.message;p.setAttribute('role','alert');app.append(p);});
+function shell(body) {
+  return `<aside><a class="brand" href="/dashboard"><span class="mark">W</span>워크스페이스</a><div class="space"><span class="avatar">P</span><div>포트폴리오 프로젝트<small>개인 작업 공간</small></div></div><p class="nav-label">WORKSPACE</p><nav><a href="/dashboard">◫ &nbsp; 프로젝트 현황</a><a href="/tasks">☷ &nbsp; 모든 업무</a><a href="/completed">✓ &nbsp; 완료한 업무</a></nav><div class="aside-bottom"><span class="live-dot"></span> 테스트 데이터로 시연 중</div></aside><div class="main"><header><span>내 작업 공간 <b> / </b> 포트폴리오 프로젝트</span><div class="user"><span>김데모</span><span class="profile">김</span></div></header><main>${body}</main><footer>WORKSPACE &nbsp; / &nbsp; YOUR WORK, IN FOCUS.</footer></div>`;
+}
+const card = (t) =>
+  `<a class="task-card" href="/tasks/${encodeURIComponent(t.id)}"><span class="task-icon ${t.done ? 'done' : ''}">${t.done ? '✓' : '•'}</span><div><h3>${escape(t.title)}</h3><p>${escape(t.description)}</p></div><span class="badge ${t.done ? 'green' : ''}">${t.done ? '완료' : '진행 중'}</span></a>`;
+async function render() {
+  if (location.pathname === '/login' || location.pathname === '/') {
+    app.innerHTML = `<div class="login"><div class="login-art"><span class="mark">W</span><h1>작업이 모이면,<br>프로젝트가 됩니다.</h1><p>하나의 공간에서 계획하고, 실행하고, 완성하세요.</p><div class="art-card"><span class="live-dot"></span> 작은 실행이 만드는 큰 변화<div class="art-lines"><i></i><i></i><i></i></div></div><small>WORKSPACE · DEMO EDITION</small></div><div class="login-form"><p class="eyebrow">WELCOME BACK</p><h2>내 작업 공간으로</h2><p>테스트 계정으로 로그인해 주세요.</p><form id="login"><label>이메일<input name="username" type="email" autocomplete="username" required></label><label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">로그인</button><p role="alert" id="error"></p></form><div class="hint">시연용 테스트 앱입니다. 실제 개인정보를 입력하지 마세요.</div></div></div>`;
+    document.querySelector('#login').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      try {
+        await api('/login', Object.fromEntries(f));
+        location.href = '/dashboard';
+      } catch (err) {
+        document.querySelector('#error').textContent = err.message;
+      }
+    };
+    return;
+  }
+  const me = await api('/me');
+  if (!me) return;
+  const data = await api('/tasks');
+  if (!data) return;
+  const tasks = data.tasks,
+    pending = tasks.filter((t) => !t.done),
+    done = tasks.filter((t) => t.done);
+  if (location.pathname === '/dashboard')
+    app.innerHTML = shell(
+      `<div class="title-row"><div><p class="eyebrow">PROJECT OVERVIEW</p><h1>프로젝트 현황</h1><p>안녕하세요, 데모님. 오늘도 한 걸음 더 나아가 볼까요?</p></div><a class="primary" href="/tasks/new">＋ 새 업무 추가</a></div><div class="stats"><article><span>전체 업무</span><strong>${tasks.length}<small>개</small></strong><p>아이디어를 실행으로</p></article><article><span>진행 중</span><strong>${pending.length}<small>개</small></strong><p><span class="live-dot"></span> 차근차근 진행하고 있어요</p></article><article class="accent-stat"><span>완료한 업무</span><strong>${done.length}<small>개</small></strong><p>잘하고 있어요. 계속 이어가세요.</p></article></div><div class="section-title"><h2>지금 집중할 업무</h2><a href="/tasks">모든 업무 보기 <span>↗</span></a></div><div class="tasks">${pending.map(card).join('')}</div><div class="note"><span>✦</span><div><b>작은 완료를 쌓아가세요.</b><p>오늘 한 가지를 끝내는 것만으로도 프로젝트는 앞으로 나아갑니다.</p></div></div>`,
+    );
+  else if (location.pathname === '/tasks/new') {
+    app.innerHTML = shell(
+      `<p class="eyebrow">CREATE A TASK</p><h1>새 업무 추가</h1><p>해야 할 일을 구체적으로 적어보세요.</p><form id="new-task" class="editor"><label>업무 제목<input name="title" placeholder="어떤 일을 해야 하나요?" required maxlength="100"></label><label>업무 설명<textarea name="description" rows="5" placeholder="작업의 목적과 완료 기준을 적어주세요."></textarea></label><div class="form-foot"><span>추가된 업무는 진행 중 목록에 표시됩니다.</span><button class="primary">업무 저장</button></div><p role="alert" id="error"></p></form>`,
+    );
+    document.querySelector('#new-task').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const t = await api('/tasks', Object.fromEntries(new FormData(e.target)));
+        location.href = '/tasks/' + t.id;
+      } catch (err) {
+        document.querySelector('#error').textContent = err.message;
+      }
+    };
+  } else if (location.pathname === '/tasks' || location.pathname === '/completed') {
+    const completed = location.pathname === '/completed';
+    app.innerHTML = shell(
+      `<div class="title-row"><div><p class="eyebrow">${completed ? 'COMPLETED' : 'ALL TASKS'}</p><h1>${completed ? '완료한 업무' : '모든 업무'}</h1><p>${completed ? '완료한 일들이 프로젝트의 성장을 보여줍니다.' : '진행 상황을 확인하고 다음 작업을 시작하세요.'}</p></div><a class="primary" href="/tasks/new">＋ 새 업무 추가</a></div><div class="list-count">${completed ? done.length : tasks.length}개의 업무</div><div class="tasks">${(completed ? done : tasks).map(card).join('')}</div>`,
+    );
+  } else {
+    const task = tasks.find((t) => t.id === decodeURIComponent(location.pathname.split('/').pop()));
+    if (!task) {
+      app.innerHTML = shell('<h1>업무를 찾을 수 없습니다.</h1>');
+      return;
+    }
+    app.innerHTML = shell(
+      `<a class="back" href="/tasks">← 모든 업무</a><article class="detail"><p class="eyebrow">TASK DETAILS</p><h1>${escape(task.title)}</h1><span ${task.done ? 'data-testid="done-badge"' : ''} class="badge ${task.done ? 'green' : ''}">${task.done ? '완료' : '진행 중'}</span><hr><p class="detail-description">${escape(task.description)}</p><div class="detail-meta"><span>담당자 <b>김데모</b></span><span>프로젝트 <b>포트폴리오</b></span></div><div class="detail-actions">${task.done ? '<div class="success"><span>✓</span><div><b>업무를 완료했어요!</b><p>한 걸음 더 앞으로 나아갔습니다.</p></div></div><a class="primary" href="/completed">완료 목록 보기</a>' : '<span>작업이 끝났다면 완료로 표시해 주세요.</span><button class="primary" id="complete">완료 처리</button>'}</div></article>`,
+    );
+    const btn = document.querySelector('#complete');
+    if (btn)
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await api('/tasks/' + task.id + '/complete', {});
+        await render();
+      };
+  }
+}
+render()
+  .then(() => {
+    // Owned PoC fixture only: simulate a real DOM change after plan approval.
+    if (window.__drBrokenOverview && location.pathname === '/dashboard')
+      document.querySelector('.section-title a').textContent = '업무 화면 열기';
+  })
+  .catch((e) => {
+    const p = document.createElement('p');
+    p.textContent = e.message;
+    p.setAttribute('role', 'alert');
+    app.append(p);
+  });

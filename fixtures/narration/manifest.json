@@ -1,0 +1,83 @@
+{
+  "overview": {
+    "file": "overview.m4a",
+    "textHash": "1d3817f348f3ffba8a0fdd867a5e92d009c20c876ba89c4448c11fc94ec9d0d6",
+    "durationMs": 16302,
+    "cues": [
+      {
+        "text": "프로젝트를 처음 보는 사람도, 실제로 어떤 일을 할 수 있는지 쉽게 이해할 수 있어야 합니다.",
+        "startMs": 0,
+        "endMs": 6608
+      },
+      {
+        "text": "먼저 로그인한 사용자의 작업 공간입니다.",
+        "startMs": 6608,
+        "endMs": 9761
+      },
+      {
+        "text": "진행 중인 업무와 완료한 업무를 한눈에 확인하고, 필요한 작업으로 바로 이동할 수 있습니다.",
+        "startMs": 9761,
+        "endMs": 16302
+      }
+    ],
+    "source": {
+      "voice": "macOS Yuna",
+      "rate": 145,
+      "purpose": "Fixed PoC fixture; not a runtime TTS integration"
+    }
+  },
+  "create": {
+    "file": "create.m4a",
+    "textHash": "20d6c9f6c426068b2e32a2311a77d9ac21a4108c56bfb91e4ee5236066f068b8",
+    "durationMs": 15493,
+    "cues": [
+      {
+        "text": "이제 새로운 업무를 직접 추가해 보겠습니다.",
+        "startMs": 0,
+        "endMs": 3154
+      },
+      {
+        "text": "제목과 설명을 입력하고 저장하면, 실제 서비스에 데이터가 만들어집니다.",
+        "startMs": 3154,
+        "endMs": 8902
+      },
+      {
+        "text": "미리 만들어 낸 화면이 아니라, 브라우저에서 실제 기능을 실행한 결과를 그대로 보여드립니다.",
+        "startMs": 8902,
+        "endMs": 15493
+      }
+    ],
+    "source": {
+      "voice": "macOS Yuna",
+      "rate": 145,
+      "purpose": "Fixed PoC fixture; not a runtime TTS integration"
+    }
+  },
+  "complete": {
+    "file": "complete.m4a",
+    "textHash": "bc03ef587fa1d6c73cbb944d8adf008e886e17405f66967ca345556e33f5720a",
+    "durationMs": 16694,
+    "cues": [
+      {
+        "text": "마지막으로 준비된 업무를 완료 처리합니다.",
+        "startMs": 0,
+        "endMs": 3327
+      },
+      {
+        "text": "버튼을 누르면 상태가 바뀌고, 완료 목록에서 결과를 다시 확인할 수 있습니다.",
+        "startMs": 3327,
+        "endMs": 9360
+      },
+      {
+        "text": "로그인 뒤의 실제 기능 흐름을 짧은 영상으로 전달하는 것, 이것이 데모 릴이 해결하려는 문제입니다.",
+        "startMs": 9360,
+        "endMs": 16693
+      }
+    ],
+    "source": {
+      "voice": "macOS Yuna",
+      "rate": 145,
+      "purpose": "Fixed PoC fixture; not a runtime TTS integration"
+    }
+  }
+}

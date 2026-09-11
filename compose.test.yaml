@@ -1,0 +1,41 @@
+# Isolated from the interactive stack: tests intentionally reset their own demo data.
+name: demo-reel-check
+services:
+  db:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo-reel-fixture
+      POSTGRES_DB: demo_reel
+    tmpfs: ['/var/lib/postgresql/data']
+    networks: [test]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U demo -d demo_reel']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  checks:
+    build: .
+    image: demo-reel:local
+    init: true
+    user: pwuser
+    command: [pnpm, check]
+    shm_size: 1gb
+    mem_limit: 5g
+    security_opt: ['seccomp=./infra/playwright-seccomp.json']
+    environment:
+      DATABASE_URL: postgres://demo:demo-reel-fixture@db:5432/demo_reel
+      DEMO_ORIGIN: http://127.0.0.1:4001
+      WEB_ORIGIN: http://127.0.0.1:5173
+      HOST: 127.0.0.1
+      DATA_DIR: /app/output
+      POC_MODE: 'true'
+      CI: 'true'
+    volumes: [evidence:/app/output]
+    networks: [test]
+    depends_on:
+      db: { condition: service_healthy }
+networks:
+  test: { internal: true }
+volumes:
+  evidence:

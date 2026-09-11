@@ -1,0 +1,89 @@
+name: demo-reel
+x-app: &app
+  build: .
+  image: demo-reel:local
+  init: true
+  user: pwuser
+  volumes:
+    - artifacts:/app/output
+  networks: [private]
+  environment: &environment
+    DATABASE_URL: postgres://demo:demo-reel-fixture@db:5432/demo_reel
+    DEMO_ORIGIN: http://demo:4001
+    WEB_ORIGIN: http://127.0.0.1:4000
+    DATA_DIR: /app/output
+    HOST: 0.0.0.0
+    POC_MODE: 'true'
+    DAILY_QUOTA: '3'
+  depends_on:
+    db: { condition: service_healthy }
+services:
+  db:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo-reel-fixture
+      POSTGRES_DB: demo_reel
+    volumes: [postgres:/var/lib/postgresql/data]
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U demo -d demo_reel']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api:
+    <<: *app
+    command: [pnpm, dev:api]
+    ports: ['127.0.0.1:4000:4000']
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  demo:
+    <<: *app
+    command: [pnpm, dev:demo]
+    ports: ['127.0.0.1:4001:4001']
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  worker:
+    <<: *app
+    command: [pnpm, dev:worker]
+    shm_size: 1gb
+    cpus: 2
+    mem_limit: 4g
+    security_opt: ['seccomp=./infra/playwright-seccomp.json']
+    depends_on:
+      db: { condition: service_healthy }
+      demo: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+networks:
+  private: { internal: true }
+volumes:
+  postgres:
+  artifacts:

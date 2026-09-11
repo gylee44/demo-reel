@@ -1,0 +1,34 @@
+name: demo-reel-worker
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/worker.Dockerfile
+    init: true
+    user: pwuser
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      POC_MODE: 'false'
+      HOST: 0.0.0.0
+      DATA_DIR: /app/output
+    restart: unless-stopped
+    shm_size: 1gb
+    cpus: 2
+    mem_limit: 4g
+    security_opt: ['seccomp=./playwright-seccomp.json']
+    ports: ['127.0.0.1:4002:4002']
+    volumes: [worker-output:/app/output]
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+volumes:
+  worker-output:

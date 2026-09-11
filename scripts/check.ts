@@ -11,5 +11,8 @@ for (const args of checks) {
   if (result.status !== 0) break;
 }
 mkdirSync('output/checks', { recursive: true });
-writeFileSync(`output/checks/${new Date().toISOString().replaceAll(':', '-')}.json`, JSON.stringify(results, null, 2));
-if (results.some(r => r.exitCode !== 0) || results.length !== checks.length) process.exit(1);
+writeFileSync(
+  `output/checks/${new Date().toISOString().replaceAll(':', '-')}.json`,
+  JSON.stringify(results, null, 2),
+);
+if (results.some((r) => r.exitCode !== 0) || results.length !== checks.length) process.exit(1);
