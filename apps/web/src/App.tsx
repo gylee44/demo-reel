@@ -41,6 +41,31 @@ const actionNames: Record<Action['type'], string> = {
   waitFor: '조건 대기',
   assert: '결과 확인',
 };
+/** Plain-language summary of a scene so the plan reads as steps, not as a form of raw fields. */
+function describeScene(plan: Plan, scene: Scene): string[] {
+  const name = (id: string) => {
+    const l = plan.locators.find((x) => x.id === id);
+    return typeof l?.value === 'string' ? `「${l.value}」` : '지정한 대상';
+  };
+  return scene.actions.map((a) => {
+    switch (a.type) {
+      case 'navigate':
+        return `${typeof a.url === 'string' ? a.url : '앞 장면의 결과 화면'}(으)로 이동합니다.`;
+      case 'click':
+        return `${name(a.locatorId)}을(를) 클릭합니다.`;
+      case 'fill':
+        return `${name(a.locatorId)}에 "${typeof a.value === 'string' ? a.value : '앞 장면의 결과'}"을(를) 입력합니다.`;
+      case 'select':
+        return `${name(a.locatorId)}에서 "${typeof a.value === 'string' ? a.value : '앞 장면의 결과'}"을(를) 선택합니다.`;
+      case 'press':
+        return `${name(a.locatorId)}에서 ${a.key} 키를 누릅니다.`;
+      case 'scroll':
+        return `화면을 ${a.deltaY > 0 ? '아래로' : '위로'} 스크롤합니다.`;
+      default:
+        return `${describeCondition(plan, a.condition)}을(를) 확인합니다.`;
+    }
+  });
+}
 function describeCondition(plan: Plan, c: Condition): string {
   const id = 'locatorId' in c ? c.locatorId : null;
   const l = plan.locators.find((l) => l.id === id);
@@ -96,6 +121,10 @@ export function App() {
     [videoUrl, setVideoUrl] = useState(''),
     [preview, setPreview] = useState<RecoveryPreview | null>(null),
     [retryScene, setRetryScene] = useState<string | null>(null);
+  // Caption rewrites typed on the result screen, kept per scene until they are sent together.
+  const [captions, setCaptions] = useState<Record<string, string>>({}),
+    [openCaption, setOpenCaption] = useState<string | null>(null),
+    [advanced, setAdvanced] = useState(false);
   useEffect(() => {
     api('/capabilities')
       .then((x) => {
@@ -300,6 +329,20 @@ export function App() {
         acceptedEffectsHash: effectsHash,
       });
       setApprovalId(approval.approvalId);
+      // A finished video keeps its clips: only scenes that were added or changed get re-recorded.
+      if (job && !['queued', 'running'].includes(job.status)) {
+        setPage('progress');
+        setRetryScene(null);
+        setPreview(
+          await api(`/jobs/${job.jobId}/recovery-preview`, 'POST', {
+            sceneIds: [],
+            mode: 'compose',
+            planId: plan.planId,
+            revision: plan.revision,
+          }),
+        );
+        return;
+      }
       const next = await api<Job>('/jobs', 'POST', {
         planId: plan.planId,
         revision: plan.revision,
@@ -308,6 +351,31 @@ export function App() {
       setJob(next);
       setVideoUrl('');
       setPage('progress');
+    });
+  }
+  /** Rewrites captions on a finished video. The app is never revisited, so nothing is re-recorded. */
+  async function applyCaptions() {
+    if (!plan || !job) return;
+    const narrations = Object.entries(captions)
+      .map(([sceneId, text]) => ({ sceneId, text: text.trim() }))
+      .filter(
+        (n) => n.text && n.text !== plan.scenes.find((s) => s.id === n.sceneId)?.narration.text,
+      );
+    if (!narrations.length) return;
+    await work('자막과 음성만 다시 만들고 있어요. 화면은 다시 찍지 않습니다.', async () => {
+      const result = await api<{ job: Job; approvalId: string }>(
+        `/jobs/${job.jobId}/narration`,
+        'POST',
+        { expectedRevision: plan.revision, narrations },
+      );
+      const saved = await api(`/plans/${result.job.planId}?revision=${result.job.revision}`);
+      setPlan(saved.plan);
+      setEffectsHash(saved.effectsHash);
+      setApprovalId(result.approvalId);
+      setJob(result.job);
+      setVideoUrl('');
+      setCaptions({});
+      setOpenCaption(null);
     });
   }
   async function recovery(sceneId: string | null) {
@@ -348,6 +416,12 @@ export function App() {
       setVideoUrl('');
     });
   }
+  const captionsChanged = plan
+    ? Object.entries(captions).filter(
+        ([id, text]) =>
+          text.trim() && text.trim() !== plan.scenes.find((s) => s.id === id)?.narration.text,
+      ).length
+    : 0;
   const scene = plan?.scenes[selected],
     canApprove =
       !!report &&
@@ -723,7 +797,7 @@ export function App() {
                       onChange={(e) => updateScene({ ...scene, title: e.target.value })}
                     />
                   </label>
-                  <label>
+                  <label hidden={!advanced}>
                     시작할 화면
                     <input
                       value={
@@ -735,10 +809,49 @@ export function App() {
                       }
                     />
                   </label>
-                  <div className="section-cap">
+                  <label className="narration-label">
+                    이 장면에서 나올 내레이션 · 자막{' '}
+                    <span>예상 약 {Math.round(scene.narration.estimatedDurationMs / 1000)}초</span>
+                    <textarea
+                      rows={4}
+                      value={scene.narration.text}
+                      onChange={(e) =>
+                        updateScene({
+                          ...scene,
+                          narration: { ...scene.narration, text: e.target.value },
+                        })
+                      }
+                    />
+                    <small>영상이 만들어진 뒤에도 이 문장만 따로 고칠 수 있어요.</small>
+                  </label>
+                  <div className="scene-steps">
+                    <div className="section-cap">
+                      이 장면에서 하는 일 <span>순서대로 실행돼요</span>
+                    </div>
+                    <ol>
+                      {describeScene(plan, scene).map((line, i) => (
+                        <li key={i}>{line}</li>
+                      ))}
+                    </ol>
+                    <div className="effect-box">
+                      <b>
+                        {scene.effects.writes.length ? '바뀌는 데이터' : '데이터를 바꾸지 않아요'}
+                      </b>
+                      <p>{scene.effects.summary}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-button advanced-toggle"
+                    aria-expanded={advanced}
+                    onClick={() => setAdvanced(!advanced)}
+                  >
+                    {advanced ? '자세한 설정 접기 ▲' : '자세히 편집하기 (동작·시간·대상) ▼'}
+                  </button>
+                  <div className="section-cap" hidden={!advanced}>
                     실행할 동작 <span>위에서 아래 순서로 실행</span>
                   </div>
-                  <div className="actions">
+                  <div className="actions" hidden={!advanced}>
                     {scene.actions.map((a, i) => (
                       <div className="action-row" key={a.id}>
                         <span className="action-index">{i + 1}</span>
@@ -864,25 +977,6 @@ export function App() {
                         </button>
                       </div>
                     ))}
-                  </div>
-                  <label className="narration-label">
-                    내레이션{' '}
-                    <span>예상 약 {Math.round(scene.narration.estimatedDurationMs / 1000)}초</span>
-                    <textarea
-                      rows={4}
-                      value={scene.narration.text}
-                      onChange={(e) =>
-                        updateScene({
-                          ...scene,
-                          narration: { ...scene.narration, text: e.target.value },
-                        })
-                      }
-                    />
-                    <small>고정 음원 PoC에서는 기본 내레이션으로 영상을 만들 수 있습니다.</small>
-                  </label>
-                  <div className="effect-box">
-                    <b>이 장면에서 변경되는 것</b>
-                    <p>{scene.effects.summary}</p>
                   </div>
                 </section>
               </div>
@@ -1013,13 +1107,45 @@ export function App() {
                           <FailureEvidence artifactId={a.failure.screenshotArtifactId} />
                         )}
                         {!['queued', 'running'].includes(job.status) && (
-                          <button
-                            className="text-button"
-                            onClick={() => recovery(s.id)}
-                            disabled={!!busy}
-                          >
-                            이 장면 다시 만들기 ↻
-                          </button>
+                          <div className="scene-tools">
+                            <button
+                              className="text-button"
+                              aria-expanded={openCaption === s.id}
+                              onClick={() => {
+                                setOpenCaption(openCaption === s.id ? null : s.id);
+                                setCaptions((c) =>
+                                  s.id in c ? c : { ...c, [s.id]: s.narration.text },
+                                );
+                              }}
+                            >
+                              자막·내레이션 고치기 ✎
+                            </button>
+                            <button
+                              className="text-button"
+                              onClick={() => recovery(s.id)}
+                              disabled={!!busy}
+                            >
+                              이 장면 다시 찍기 ↻
+                            </button>
+                          </div>
+                        )}
+                        {openCaption === s.id && (
+                          <div className="caption-editor">
+                            <label>
+                              {s.title} 자막
+                              <textarea
+                                rows={4}
+                                value={captions[s.id] ?? s.narration.text}
+                                onChange={(e) =>
+                                  setCaptions({ ...captions, [s.id]: e.target.value })
+                                }
+                              />
+                            </label>
+                            <p className="small-note">
+                              화면은 그대로 두고 음성과 자막만 새로 만듭니다. 촬영·로그인은 다시
+                              하지 않아요.
+                            </p>
+                          </div>
                         )}
                       </article>
                     );
@@ -1037,13 +1163,30 @@ export function App() {
                       작업 취소
                     </button>
                   ) : (
-                    <button
-                      className="secondary wide"
-                      onClick={() => recovery(null)}
-                      disabled={!!busy}
-                    >
-                      기존 클립으로 다시 합성
-                    </button>
+                    <>
+                      {captionsChanged > 0 && (
+                        <button className="primary wide" onClick={applyCaptions} disabled={!!busy}>
+                          자막 {captionsChanged}개 반영해서 다시 만들기 →
+                        </button>
+                      )}
+                      <button
+                        className="secondary wide"
+                        onClick={() => {
+                          setPreview(null);
+                          setPage('review');
+                        }}
+                        disabled={!!busy}
+                      >
+                        보여줄 기능 추가하기 ＋
+                      </button>
+                      <button
+                        className="secondary wide"
+                        onClick={() => recovery(null)}
+                        disabled={!!busy}
+                      >
+                        기존 클립으로 다시 합성
+                      </button>
+                    </>
                   )}
                 </section>
               </div>

@@ -28,7 +28,7 @@ import type {
   Artifact,
 } from '../../api/src/models.ts';
 import { launchBrowser, authenticate, newContext, locate, captureScene } from './browser.ts';
-import { renderScene, compose, storeArtifact, writeManifest } from './media.ts';
+import { renderScene, compose, storeArtifact, writeManifest, type Narration } from './media.ts';
 const uid = (s: string) => `${s}_${randomUUID()}`;
 function failure(error: unknown, sceneId: string | null = null): Failure {
   const e =
@@ -194,8 +194,18 @@ export async function runJob(
     await persist(db, record);
     const audio = new Map();
     const audioDeadline = Date.now() + 120000;
+    // Scenes kept as-is reuse their finished clip, so re-voicing them would only cost provider calls.
     for (const scene of plan.scenes)
-      audio.set(scene.id, await narrate(scene, cfg, join(dir, `audio-${scene.id}`), audioDeadline));
+      if (renderIds.has(scene.id))
+        audio.set(
+          scene.id,
+          await narrate(scene, cfg, join(dir, `audio-${scene.id}`), audioDeadline),
+        );
+    function narrationFor(sceneId: string): Narration {
+      const voiced = audio.get(sceneId);
+      if (!voiced) throw new AppError('RENDER_FAILED', '이 장면의 음성을 준비하지 못했습니다.');
+      return voiced;
+    }
     let state: BrowserContextOptions['storageState'];
     if (captureIds.size) {
       job.stage = 'preflight';
@@ -252,9 +262,9 @@ export async function runJob(
         continue;
       }
       try {
-        const n = audio.get(scene.id)!;
         let rawPath: string;
         let durationMs: number;
+        let n: Narration;
         if (!captureIds.has(scene.id) && prior) {
           Object.assign(attempt, {
             ...prior,
@@ -270,6 +280,7 @@ export async function runJob(
             await persist(db, record);
             continue;
           }
+          n = narrationFor(scene.id);
           const raw = await db.get<Artifact>('artifact', prior.rawClipArtifactId!, owner);
           if (!raw || Date.parse(raw.expiresAt) < Date.now())
             throw new AppError('RENDER_FAILED', '재사용할 원본 영상이 만료되었습니다.');
@@ -283,6 +294,7 @@ export async function runJob(
               'EFFECT_UNKNOWN',
               '앱 상태 확인이 필요한 장면은 자동 재실행하지 않습니다.',
             );
+          n = narrationFor(scene.id);
           job.stage = 'capture';
           await persist(db, record);
           const captured = await captureScene(

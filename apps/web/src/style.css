@@ -1153,3 +1153,64 @@ input[readonly] {
     flex-basis: 100%;
   }
 }
+
+/* Author rules such as `label { display: grid }` outrank the browser default for [hidden]. */
+[hidden] {
+  display: none !important;
+}
+
+/* Plain-language scene summary shown before any technical field. */
+.scene-steps {
+  margin: 4px 0 2px;
+}
+.scene-steps ol {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: grid;
+  gap: 7px;
+}
+.scene-steps li {
+  font-size: 14px;
+  line-height: 1.55;
+  color: #2f3a33;
+}
+.scene-steps li::marker {
+  color: #6f8a78;
+  font-weight: 600;
+}
+.advanced-toggle {
+  align-self: flex-start;
+  margin: 2px 0 10px;
+}
+/* Caption rewriting on a finished video. */
+.scene-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: flex-end;
+}
+.caption-editor {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #dbe4dd;
+  border-radius: 9px;
+  background: #f7faf8;
+}
+.caption-editor label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #48574e;
+}
+.caption-editor textarea {
+  font: inherit;
+  padding: 9px 11px;
+  border: 1px solid #cdd8d1;
+  border-radius: 7px;
+  resize: vertical;
+  background: #fff;
+}
+.caption-editor .small-note {
+  margin: 8px 0 0;
+}

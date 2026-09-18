@@ -696,6 +696,100 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
       }),
     ),
   );
+  /**
+   * Subtitle and narration edits on a finished video. Narration never touches the target app,
+   * so this path re-renders from the stored clips and skips re-authentication and DOM checks:
+   * the next plan is built from the stored version with only narration text substituted, and
+   * the server itself sets captureSceneIds to empty, so no request can turn it into a re-record.
+   */
+  app.post('/api/v1/jobs/:id/narration', async (req, reply) =>
+    reply.code(202).send(
+      await once(req, async (o, c) => {
+        const b = z
+          .strictObject({
+            expectedRevision: z.number().int(),
+            narrations: z
+              .array(z.strictObject({ sceneId: z.string(), text: z.string().min(1).max(600) }))
+              .min(1)
+              .max(6),
+          })
+          .parse(req.body);
+        const base = await get<InternalJob>('job', params(req).id, o, c);
+        if (['queued', 'running'].includes(base.snapshot.status))
+          throw new AppError('JOB_ACTIVE', '진행 중인 작업을 먼저 마치거나 취소해 주세요.', 409);
+        const meta = await get<PlanRecord>('plan', base.snapshot.planId, o, c);
+        if (meta.revision !== b.expectedRevision)
+          throw new AppError('STALE_REVISION', '다른 변경 사항을 먼저 불러와 주세요.', 409);
+        const old = await get<Plan>('plan_version', `${meta.planId}_${meta.revision}`, o, c);
+        // Re-rendering needs every original clip, so only a fully successful video can be edited.
+        const reusable = new Set(
+          base.snapshot.sceneAttempts
+            .filter((a) => a.status === 'succeeded' && a.rawClipArtifactId)
+            .map((a) => a.sceneId),
+        );
+        if (old.scenes.some((s) => !reusable.has(s.id)))
+          throw new AppError(
+            'PRECONDITION_FAILED',
+            '모든 장면이 완성된 영상에서만 자막을 수정할 수 있습니다.',
+            409,
+          );
+        for (const n of b.narrations)
+          if (!old.scenes.some((s) => s.id === n.sceneId))
+            throw new AppError('INVALID_PLAN', '계획에 없는 장면입니다.');
+        const changed = b.narrations.filter(
+          (n) => old.scenes.find((s) => s.id === n.sceneId)!.narration.text !== n.text,
+        );
+        if (!changed.length) throw new AppError('INVALID_PLAN', '변경된 자막이 없습니다.');
+        const next = PlanSchema.parse({
+          ...old,
+          revision: meta.revision + 1,
+          createdAt: new Date().toISOString(),
+          scenes: old.scenes.map((s) => {
+            const n = changed.find((x) => x.sceneId === s.id);
+            return n ? { ...s, narration: { ...s.narration, text: n.text } } : s;
+          }),
+        });
+        await db.put('plan_version', `${next.planId}_${next.revision}`, o, next, meta.projectId, c);
+        await db.put(
+          'plan',
+          meta.planId,
+          o,
+          { ...meta, revision: next.revision, state: 'approved' },
+          meta.projectId,
+          c,
+        );
+        // Targets are untouched, so the approved video's own report still describes this plan.
+        const a: Approval = {
+          approvalId: uid('approval'),
+          planId: next.planId,
+          revision: next.revision,
+          reportId: base.approval.reportId,
+          approvedAt: new Date().toISOString(),
+          acceptedEffectsHash: effectsHash(next),
+        };
+        await db.put('approval', a.approvalId, o, a, meta.projectId, c);
+        const recovery: RecoveryPreview = {
+          previewId: uid('preview'),
+          baseJobVersion: base.snapshot.version,
+          targetPlanRevision: next.revision,
+          mode: 'rerender',
+          captureSceneIds: [],
+          renderSceneIds: changed.map((n) => n.sceneId),
+          reuseArtifactIds: base.snapshot.sceneAttempts
+            .filter(
+              (x) => x.status === 'succeeded' && !changed.some((n) => n.sceneId === x.sceneId),
+            )
+            .flatMap((x) => (x.renderedArtifactId ? [x.renderedArtifactId] : [])),
+          requiresAuth: false,
+          requiresStateReset: false,
+          reasons: [],
+          expiresAt: isoAfter(600000),
+        };
+        // The edit creates a new approval, so the caller needs it for any later recovery.
+        return { job: await enqueue(o, next, a, c, base, recovery), approvalId: a.approvalId };
+      }),
+    ),
+  );
   app.get('/api/v1/artifacts/:id/download', async (req) => {
     const artifact = await get<Artifact>('artifact', params(req).id, owner(req));
     if (Date.parse(artifact.expiresAt) < Date.now())

@@ -6,7 +6,8 @@ if (existsSync('playwright.config.ts')) checks.push(['test:e2e']);
 const results = [];
 for (const args of checks) {
   const started = Date.now();
-  const result = spawnSync('pnpm', args, { stdio: 'inherit', env: process.env });
+  // Windows resolves pnpm only as pnpm.cmd, which Node refuses to spawn without a shell (CVE-2024-27980).
+  const result = spawnSync('pnpm', args, { stdio: 'inherit', env: process.env, shell: true });
   results.push({ check: args[0], exitCode: result.status, durationMs: Date.now() - started });
   if (result.status !== 0) break;
 }

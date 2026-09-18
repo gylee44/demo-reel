@@ -60,23 +60,21 @@ it('does not call any provider without a key or model', async () => {
 it('uses structured outputs and rejects refusal/incomplete/invalid provider responses', async () => {
   const cfg = { ...config(), openaiKey: 'test-only-key', plannerModel: 'configured-model' };
   const scenes = samplePlan('https://example.org', 'p', 'plan').scenes;
-  const request = vi
-    .fn()
-    .mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: 'completed',
-          output: [
-            {
-              type: 'message',
-              content: [
-                { type: 'output_text', text: JSON.stringify({ title: '관측 기반', scenes }) },
-              ],
-            },
-          ],
-        }),
-      ),
-    );
+  const request = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            content: [
+              { type: 'output_text', text: JSON.stringify({ title: '관측 기반', scenes }) },
+            ],
+          },
+        ],
+      }),
+    ),
+  );
   expect((await generateDraft(cfg, '기능', [], request)).title).toBe('관측 기반');
   const body = JSON.parse(request.mock.calls[0][1].body);
   expect(body.store).toBe(false);
@@ -117,4 +115,18 @@ it('refuses mutation actions mislabeled as read-only', () => {
   plan.scenes[1].effects.writes = [];
   plan.scenes[1].retryPolicy = 'read_only';
   expect(() => assertExecutionPolicy(plan)).toThrow();
+});
+it.each([
+  ['크레딧 소진', { error: { type: 'insufficient_quota', code: 'credit_balance_exhausted' } }],
+  ['한도 초과', { error: { type: 'insufficient_quota' } }],
+])('reports %s as exhausted quota rather than a transient rate limit', async (_label, body) => {
+  const error: any = await generateSpeech(
+    { ...config(), openaiKey: 'test' },
+    'hello',
+    vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 429 })),
+  ).catch((e) => e);
+  expect(error.code).toBe('PROVIDER_QUOTA_EXHAUSTED');
+  // Waiting never restores an empty balance, so the message must not suggest retrying.
+  expect(error.message).not.toContain('잠시 후');
+  expect(error.message).not.toContain('credit_balance_exhausted');
 });

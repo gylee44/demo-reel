@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Config } from '../../../api/src/config.ts';
 import { AppError } from '../../../api/src/security.ts';
+import { providerFailure } from './errors.ts';
 import { SceneSchema } from '../../../../packages/contracts/src/index.ts';
 import type { Observation } from '../discovery.ts';
 export const DraftSchema = z.strictObject({
@@ -45,12 +46,7 @@ async function call(
       signal: AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs))),
       redirect: 'error',
     });
-    if (!response.ok)
-      throw new AppError(
-        response.status === 429 ? 'PROVIDER_RATE_LIMIT' : 'PROVIDER_FAILED',
-        'AI 제공자가 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
-        502,
-      );
+    if (!response.ok) throw await providerFailure(response);
     return response;
   } catch (e) {
     if (e instanceof AppError) throw e;

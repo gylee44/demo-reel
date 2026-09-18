@@ -20,7 +20,8 @@
     "poc": "tsx scripts/poc.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "start:worker": "tsx apps/worker/src/main.ts",
-    "start:api": "tsx apps/api/src/main.ts"
+    "start:api": "tsx apps/api/src/main.ts",
+    "check:provider": "tsx scripts/check-provider.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1128.0",

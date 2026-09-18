@@ -365,3 +365,112 @@ it('protects the demo app, creates real DB data, prevents duplicate creation, an
     ).rows[0].count,
   ).toBe(1);
 });
+
+/** Builds a finished job whose clips can be reused, without running the browser worker. */
+async function finished(s: Awaited<ReturnType<typeof seed>>) {
+  const jobId = `job_${randomUUID()}`;
+  const record: InternalJob = {
+    owner: s.owner,
+    projectId: s.projectId,
+    plan: s.plan,
+    approval: s.approval,
+    cancelRequested: false,
+    reservation: true,
+    snapshot: {
+      jobId,
+      version: 3,
+      status: 'succeeded',
+      stage: 'verify',
+      planId: s.plan.planId,
+      revision: 1,
+      totalSceneCount: s.plan.scenes.length,
+      completedSceneCount: s.plan.scenes.length,
+      outputArtifactId: `artifact_${randomUUID()}`,
+      failure: null,
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      sceneAttempts: s.plan.scenes.map((scene: Plan['scenes'][number]) => ({
+        attemptId: `attempt_${randomUUID()}`,
+        jobId,
+        sceneId: scene.id,
+        planRevision: 1,
+        status: 'succeeded',
+        stage: 'render',
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        rawClipArtifactId: `artifact_${randomUUID()}`,
+        renderedArtifactId: `artifact_${randomUUID()}`,
+        audioArtifactId: `artifact_${randomUUID()}`,
+        durationMs: 16000,
+        outputs: {},
+        effectOutcome: 'none',
+        failure: null,
+      })),
+    },
+  } as InternalJob;
+  await db.put('job', jobId, s.owner, record, s.projectId);
+  return { jobId, record };
+}
+
+it('rewrites captions on a finished video without scheduling any re-recording', async () => {
+  const s = await seed(),
+    { jobId } = await finished(s),
+    target = s.plan.scenes[1];
+  const r = await app.inject({
+    method: 'POST',
+    url: `/api/v1/jobs/${jobId}/narration`,
+    headers: headers(s.cookie),
+    payload: {
+      expectedRevision: 1,
+      narrations: [{ sceneId: target.id, text: '새로 고친 자막 문장입니다.' }],
+    },
+  });
+  expect(r.statusCode).toBe(202);
+  const { job, approvalId } = json(r);
+  expect(job.revision).toBe(2);
+  expect(approvalId).toBeTruthy();
+  const next = await db.get<Plan>('plan_version', `${s.plan.planId}_2`, s.owner);
+  expect(next!.scenes.find((x) => x.id === target.id)!.narration.text).toBe(
+    '새로 고친 자막 문장입니다.',
+  );
+  // Everything except that one narration must be byte-identical to the approved plan.
+  const strip = (p: Plan) => ({
+    ...p,
+    revision: 0,
+    createdAt: '',
+    scenes: p.scenes.map((x) => ({ ...x, narration: null })),
+  });
+  expect(strip(next!)).toEqual(strip(s.plan));
+  const queued = await db.get<InternalJob>('job', job.jobId, s.owner);
+  expect(queued!.recovery!.captureSceneIds).toEqual([]);
+  expect(queued!.recovery!.renderSceneIds).toEqual([target.id]);
+  expect(queued!.recovery!.requiresAuth).toBe(false);
+  expect(queued!.baseJobId).toBe(jobId);
+});
+
+it('refuses caption edits that would need a missing clip or change nothing', async () => {
+  const s = await seed(),
+    { jobId, record } = await finished(s);
+  const unchanged = await app.inject({
+    method: 'POST',
+    url: `/api/v1/jobs/${jobId}/narration`,
+    headers: headers(s.cookie),
+    payload: {
+      expectedRevision: 1,
+      narrations: [{ sceneId: s.plan.scenes[0].id, text: s.plan.scenes[0].narration.text }],
+    },
+  });
+  expect(unchanged.statusCode).toBe(400);
+  const broken = { ...record };
+  broken.snapshot.sceneAttempts[0].status = 'failed';
+  await db.put('job', jobId, s.owner, broken, s.projectId);
+  const partial = await app.inject({
+    method: 'POST',
+    url: `/api/v1/jobs/${jobId}/narration`,
+    headers: headers(s.cookie),
+    payload: {
+      expectedRevision: 1,
+      narrations: [{ sceneId: s.plan.scenes[1].id, text: '다른 문장으로 바꿔 봅니다.' }],
+    },
+  });
+  expect(partial.statusCode).toBe(409);
+});

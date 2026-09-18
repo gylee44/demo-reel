@@ -44,6 +44,12 @@ flowchart LR
 | HOST | 불필요 | 0.0.0.0 | 워커 상태 확인용 리스닝 주소 |
 | DATA_DIR | /tmp/demo-reel | /app/output | 워커의 임시 녹화·렌더 디렉터리 |
 
+2026-09-15 실제 키로 확인한 사실은 다음과 같다.
+
+- OpenAI 계정은 크레딧을 충전하기 전까지 모든 호출이 429(`credit_balance_exhausted`)로 거부된다. 충전 전 계정의 모델 목록에는 gpt-5 계열이 나타나지 않았으므로, 충전 후 `OPENAI_PLANNER_MODEL` 값이 실제로 사용 가능한지 다시 확인한다. 목록에 있던 `gpt-4o-mini`도 Structured Outputs를 지원하므로 대체 후보다.
+- 크레딧 소진과 일시적 요청 제한은 둘 다 HTTP 429로 오지만 조치가 반대다. 워커는 공급자의 사유 코드(`insufficient_quota`, `credit_balance_exhausted`)를 읽어 `PROVIDER_QUOTA_EXHAUSTED`와 `PROVIDER_RATE_LIMIT`을 구분한다. 전자는 기다려도 풀리지 않으므로 재시도를 안내하지 않는다. 응답 본문 자체는 어느 경우에도 메시지·로그에 남기지 않는다.
+- `pnpm check:provider`로 배포 전에 키·모델·잔액을 1회 호출로 확인한다. 실패하면 그 키가 실제로 쓸 수 있는 모델 목록이나 결제 설정 주소를 함께 출력한다.
+
 워커가 OpenAI·저장소 설정을 갖추고 heartbeat를 기록해야 생성 버튼이 활성화된다. heartbeat는 자격 증명 존재 여부와 프로세스 생존 신호이며, 실제 공급자 인증·잔액 검증은 아니다. 잘못된 키나 공급자 오류는 작업 실패로 표시된다.
 
 ## 준비 순서
@@ -64,6 +70,7 @@ S3 CORS는 서비스 origin에서 GET·HEAD 및 Range 재생을 허용한다. �
 - AI는 관측한 locator 목록을 사용해 계획을 생성한다. 관측되지 않은 화면을 자동 성공으로 처리하지 않는다. 데이터 변경은 사용자가 승인한 계획에서 실행하며, 불확실한 변경은 자동 반복하지 않는다.
 - Chromium 트래픽은 요청마다 DNS를 검사하고 확인된 공개 IP로 연결하는 프록시를 통과한다. 브라우저 sandbox를 켜며 비밀 환경변수를 브라우저 자식 프로세스에 전달하지 않는다. 실제 Linux 호스트에서 sandbox 기동과 네트워크 격리를 확인한 뒤 공개한다.
 - 회원 비밀번호는 scrypt로 저장하고, 세션은 서버 DB에서 만료·취소한다. 비밀번호 변경은 모든 기존 세션을 무효화한다. 이메일 인증과 비밀번호 분실 메일은 이 버전에 포함하지 않는다. 메일 공급자 선택과 별도 구현이 필요하다.
+- 세션 쿠키는 `SameSite=Strict`를 유지한다. 화면은 정적 `index.html`로 내려가고 로그인 상태는 화면이 뜬 뒤 같은 origin의 fetch로 확인하므로, 외부 링크를 눌러 처음 들어온 심사위원도 로그인 상태가 풀리지 않는다. 영상 내려받기 주소는 presigned URL이거나 HMAC 서명이 붙은 같은 origin 경로라 세션 쿠키에 기대지 않는다.
 - 인증 자료는 최대 2시간, 영상은 24시간 보관한다. 워커는 만료 자료를 주기적으로 정리한다. 실패한 저장소 정리는 다음 주기에 재시도한다. 작업 메타데이터는 작업 목록을 위해 유지한다.
 - 음성은 AI 생성임을 화면에 알린다. 자막은 짧은 문장 단위로 TTS를 요청하고 실제 오디오 길이에 맞춘다. 발음·자연스러움과 실제 모델 계획 품질은 키 입력 후 검수해야 한다. [OpenAI Speech](https://developers.openai.com/api/docs/guides/text-to-speech), [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 
