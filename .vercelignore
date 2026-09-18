@@ -1,0 +1,16 @@
+# 배포 산출물에 필요 없는 것. output/은 녹화·스크린샷이 쌓이는 곳이라 특히 올리지 않는다.
+output/
+tests/
+fixtures/
+playwright-report/
+test-results/
+infra/
+compose*.yaml
+Dockerfile
+*.log
+.auth/
+
+# 로컬 비밀값은 절대 업로드하지 않는다 (Vercel 환경변수로만 주입)
+.env
+.env.*
+.vercel

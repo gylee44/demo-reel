@@ -17,3 +17,7 @@ test-results/
 # 로컬 작업 메모와 환경별 테스트 자료 (저장소에 올리지 않음)
 HANDOFF.md
 minio-ca.crt
+
+.vercel
+.env*
+!.env.example
