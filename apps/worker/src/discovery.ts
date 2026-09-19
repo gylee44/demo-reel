@@ -18,6 +18,11 @@ export async function discover(
   const context = await newContext(browser, { target }, state);
   const result: Observation[] = [];
   const queue = [...new Set([target.baseUrl, ...urls])].slice(0, 6);
+  // The model has to copy these ids into the plan by hand, and it drops characters out of a UUID:
+  // a run failed on "Unknown locator: loc_d9b2f8da-c6d0-4c90-b0e-534dd4b5530c", a segment short.
+  // They only have to be unique within the plan, so keep them short enough to reproduce exactly.
+  let locatorCount = 0;
+  const nextLocatorId = () => `loc_${++locatorCount}`;
   try {
     for (const url of queue) {
       if (!target.allowedOrigins.includes(new URL(url).origin)) continue;
@@ -63,7 +68,7 @@ export async function discover(
         const locators: Plan['locators'] = [];
         for (const e of raw) {
           if (e.type === 'password' || e.type === 'hidden') continue;
-          const base = { id: `loc_${randomUUID()}`, exact: true, scopeLocatorId: null, evidenceId };
+          const base = { id: nextLocatorId(), exact: true, scopeLocatorId: null, evidenceId };
           if (e.testId) locators.push({ ...base, strategy: 'testId', value: e.testId, role: null });
           else if (e.label)
             locators.push({ ...base, strategy: 'label', value: e.label, role: null });
@@ -87,7 +92,7 @@ export async function discover(
         for (const selector of ['h1', 'main', 'form'])
           if ((await page.locator(selector).count()) === 1)
             locators.push({
-              id: `loc_${randomUUID()}`,
+              id: nextLocatorId(),
               strategy: 'css',
               value: selector,
               role: null,
