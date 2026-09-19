@@ -8,9 +8,20 @@ const cfg = config(),
 await db.init();
 // One browser/encoding worker owns the entire execution lane, including after restarts.
 const lease = await db.pool.connect();
-const lock = await lease.query('SELECT pg_try_advisory_lock(73480219) AS acquired');
-if (!lock.rows[0].acquired) {
-  console.error('Another Demo Reel worker owns the execution lane.');
+// A killed worker leaves this session lock held until Postgres notices the dead connection, so a
+// redeploy finds the lane taken for a while. Waiting beats exiting: the replacement takes over as
+// soon as the old session goes, instead of relying on restart backoff to try again.
+let acquired = false;
+for (let attempt = 0; attempt < 30 && !acquired; attempt++) {
+  acquired = (await lease.query('SELECT pg_try_advisory_lock(73480219) AS acquired')).rows[0]
+    .acquired;
+  if (!acquired) {
+    if (attempt === 0) console.error('Execution lane busy; waiting for the previous worker to go.');
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+if (!acquired) {
+  console.error('Another Demo Reel worker still owns the execution lane after 150s.');
   lease.release();
   await db.close();
   process.exit(1);

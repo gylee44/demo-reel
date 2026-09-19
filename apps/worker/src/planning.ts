@@ -18,22 +18,29 @@ import { generateDraft, requireOpenAI } from './providers/openai.ts';
  * them here does not change what the plan does, and saves a retry that often fails the same way.
  */
 function declareDerivableFields(scenes: any[]) {
-  const preceding = new Set<string>();
+  const preceding = new Map<string, any>();
   for (const scene of scenes) {
-    const referenced = new Set<string>();
+    const referenced: { sceneId: string; output: string }[] = [];
     const walk = (value: unknown) => {
       if (!value || typeof value !== 'object') return;
       if (Array.isArray(value)) return value.forEach(walk);
       const node = value as Record<string, unknown>;
       if (typeof node.sceneId === 'string' && typeof node.output === 'string')
-        referenced.add(node.sceneId);
+        referenced.push({ sceneId: node.sceneId, output: node.output });
       Object.values(node).forEach(walk);
     };
     walk({ ...scene, dependsOn: undefined });
-    for (const id of referenced)
-      if (preceding.has(id) && !scene.dependsOn.includes(id)) scene.dependsOn.push(id);
+    for (const { sceneId, output } of referenced) {
+      const source = preceding.get(sceneId);
+      if (!source) continue;
+      if (!scene.dependsOn.includes(sceneId)) scene.dependsOn.push(sceneId);
+      // The reference is only valid if the earlier scene publishes that name. The model often reads
+      // a page URL it never declared, and the current URL is what such a reference means.
+      if (!source.outputs.some((o: any) => o.name === output))
+        source.outputs.push({ name: output, source: 'currentUrl', locatorId: null });
+    }
     if (scene.retryPolicy !== 'verify_before_repeat') scene.recoveryConditions = null;
-    preceding.add(scene.id);
+    preceding.set(scene.id, scene);
   }
 }
 export async function buildProjectPlan(
