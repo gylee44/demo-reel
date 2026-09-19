@@ -31,6 +31,10 @@ import { launchBrowser, authenticate, newContext, locate, captureScene } from '.
 import { renderScene, compose, storeArtifact, writeManifest, type Narration } from './media.ts';
 const uid = (s: string) => `${s}_${randomUUID()}`;
 function failure(error: unknown, sceneId: string | null = null): Failure {
+  // An unexpected error is replaced by a generic message for the user, so the worker log is the
+  // only place its cause survives. Without this there is nothing to debug a production failure with.
+  if (!(error instanceof AppError))
+    console.error('[worker] unexpected failure', sceneId ? `scene=${sceneId}` : '', error);
   const e =
     error instanceof AppError
       ? error
