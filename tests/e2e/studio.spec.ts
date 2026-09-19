@@ -15,6 +15,8 @@ test('review, edit, approve, queue, record and play the real three-scene demo', 
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/');
   await page.getByLabel('보여줄 기능 한 문장').fill('업무를 추가하고 완료하는 기능을 보여주세요.');
+  // The form opens on the choice that asks for nothing, so the credentials are a click away.
+  await page.getByRole('button', { name: '테스트 계정', exact: true }).click();
   await page.getByLabel('테스트 계정 ID', { exact: true }).fill('demo@demo-reel.test');
   await page.getByLabel('테스트 비밀번호', { exact: true }).fill('demo-reel-poc');
   await expect(page.getByRole('heading', { name: /링크 너머의 기능/ })).toBeVisible();
@@ -76,6 +78,8 @@ test('review, edit, approve, queue, record and play the real three-scene demo', 
 test('shows invalid authentication without starting a recording', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('보여줄 기능 한 문장').fill('업무를 추가하고 완료하는 기능을 보여주세요.');
+  // The form opens on the choice that asks for nothing, so the credentials are a click away.
+  await page.getByRole('button', { name: '테스트 계정', exact: true }).click();
   await page.getByLabel('테스트 계정 ID', { exact: true }).fill('demo@demo-reel.test');
   await page.getByLabel('테스트 비밀번호', { exact: true }).fill('demo-reel-poc');
   await page.getByLabel('테스트 비밀번호', { exact: true }).fill('wrong-password');
@@ -86,6 +90,8 @@ test('shows invalid authentication without starting a recording', async ({ page 
 test('rejects invalid plan input and keeps recording disabled', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('보여줄 기능 한 문장').fill('업무를 추가하고 완료하는 기능을 보여주세요.');
+  // The form opens on the choice that asks for nothing, so the credentials are a click away.
+  await page.getByRole('button', { name: '테스트 계정', exact: true }).click();
   await page.getByLabel('테스트 계정 ID', { exact: true }).fill('demo@demo-reel.test');
   await page.getByLabel('테스트 비밀번호', { exact: true }).fill('demo-reel-poc');
   await page.getByRole('button', { name: /실행 계획 만들기/ }).click();
