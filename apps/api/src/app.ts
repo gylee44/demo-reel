@@ -643,7 +643,12 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
       reuseArtifactIds: base.snapshot.sceneAttempts
         .filter((a) => a.status === 'succeeded' && !render.includes(a.sceneId))
         .flatMap((a) => (a.renderedArtifactId ? [a.renderedArtifactId] : [])),
-      requiresAuth: capture.length > 0 && (!auth || Date.parse(auth.expiresAt) <= Date.now()),
+      // A plan that authenticates needs live credentials to re-record; one that does not never
+      // has an auth record, and treating that absence as expired would block its recovery forever.
+      requiresAuth:
+        capture.length > 0 &&
+        p.auth.mode !== 'none' &&
+        (!auth || Date.parse(auth.expiresAt) <= Date.now()),
       requiresStateReset: !!reset,
       reasons: reset
         ? [
