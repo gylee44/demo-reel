@@ -11,6 +11,31 @@ import { samplePlan } from '../../../packages/contracts/src/sample.ts';
 import { authenticate } from './authentication.ts';
 import { discover, type Observation } from './discovery.ts';
 import { generateDraft, requireOpenAI } from './providers/openai.ts';
+/**
+ * Fills in the two plan fields that follow from the draft itself rather than from judgement, which
+ * are the ones the model most often leaves inconsistent: a scene that reads another scene's output
+ * must name it in dependsOn, and recovery predicates belong only to verify_before_repeat. Declaring
+ * them here does not change what the plan does, and saves a retry that often fails the same way.
+ */
+function declareDerivableFields(scenes: any[]) {
+  const preceding = new Set<string>();
+  for (const scene of scenes) {
+    const referenced = new Set<string>();
+    const walk = (value: unknown) => {
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value)) return value.forEach(walk);
+      const node = value as Record<string, unknown>;
+      if (typeof node.sceneId === 'string' && typeof node.output === 'string')
+        referenced.add(node.sceneId);
+      Object.values(node).forEach(walk);
+    };
+    walk({ ...scene, dependsOn: undefined });
+    for (const id of referenced)
+      if (preceding.has(id) && !scene.dependsOn.includes(id)) scene.dependsOn.push(id);
+    if (scene.retryPolicy !== 'verify_before_repeat') scene.recoveryConditions = null;
+    preceding.add(scene.id);
+  }
+}
 export async function buildProjectPlan(
   browser: Browser,
   db: Database,
@@ -72,6 +97,7 @@ export async function buildProjectPlan(
   let corrections: string[] | undefined;
   for (let attempt = 0; attempt < 3 && !plan; attempt++) {
     draft = await generateDraft(cfg, project.intent, visible, fetch, corrections);
+    declareDerivableFields(draft.scenes);
     const candidate = {
       schemaVersion: '0.1',
       planId: `plan_${randomUUID()}`,
