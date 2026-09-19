@@ -83,6 +83,14 @@ export class Database {
     await this.pool.end();
   }
 }
+/**
+ * Two lanes, because the two kinds of work do not cost the same. Planning waits on the provider;
+ * recording holds a browser and an encoder. Sharing one lane meant a plan request queued behind
+ * somebody else's video — which is also why the studio could not record itself: the click that
+ * asks for a plan waited on the very worker that was filming the click.
+ */
+export const RECORD_QUEUE = 'demo-reel';
+export const PLAN_QUEUE = 'demo-reel-plan';
 export async function createQueue(connectionString: string, producerOnly = false) {
   const boss = new PgBoss({
     connectionString,
@@ -91,6 +99,8 @@ export async function createQueue(connectionString: string, producerOnly = false
   });
   boss.on('error', (error) => process.stderr.write(`Queue error: ${error.message}\n`));
   await boss.start();
-  if (!producerOnly) await boss.createQueue('demo-reel', { retryLimit: 0, expireInSeconds: 600 });
+  if (!producerOnly)
+    for (const name of [RECORD_QUEUE, PLAN_QUEUE])
+      await boss.createQueue(name, { retryLimit: 0, expireInSeconds: 600 });
   return boss;
 }

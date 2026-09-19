@@ -1,6 +1,6 @@
 import { heartbeat, cleanupExpired } from './maintenance.ts';
 import { config } from '../../api/src/config.ts';
-import { Database, createQueue } from '../../api/src/db.ts';
+import { Database, createQueue, PLAN_QUEUE, RECORD_QUEUE } from '../../api/src/db.ts';
 import { processOperation, runJob, recoverInterrupted } from './runner.ts';
 import { createServer } from 'node:http';
 const cfg = config(),
@@ -43,19 +43,26 @@ const maintenance = setInterval(() => {
     });
 }, 300000);
 const queue = await createQueue(cfg.databaseUrl);
-await queue.work<{ type: 'operation' | 'job'; id: string; owner: string }>(
-  'demo-reel',
-  { localConcurrency: 1, batchSize: 1, pollingIntervalSeconds: 1 },
-  async (jobs) => {
-    for (const { data } of jobs)
-      if (data.type === 'operation') await processOperation(db, cfg, data.id, data.owner);
-      else
-        await runJob(db, cfg, data.id, data.owner, {
-          crashAfterAction: process.env.POC_CRASH_AFTER_ACTION,
-        });
-  },
+type Task = { type: 'operation' | 'job'; id: string; owner: string };
+const lane = (name: string, localConcurrency: number, run: (task: Task) => Promise<void>) =>
+  queue.work<Task>(name, { localConcurrency, batchSize: 1, pollingIntervalSeconds: 1 }, (jobs) =>
+    Promise.all(jobs.map(({ data }) => run(data))).then(() => {}),
+  );
+// The record lane still answers on the plan lane's behalf for anything enqueued before the split,
+// so nothing already waiting is stranded by a deploy.
+await lane(RECORD_QUEUE, cfg.recordConcurrency, async (task) =>
+  task.type === 'operation'
+    ? processOperation(db, cfg, task.id, task.owner)
+    : runJob(db, cfg, task.id, task.owner, {
+        crashAfterAction: process.env.POC_CRASH_AFTER_ACTION,
+      }),
 );
-console.log('Demo Reel worker ready: concurrency=1, browser auto-retry=0');
+await lane(PLAN_QUEUE, cfg.planConcurrency, (task) =>
+  processOperation(db, cfg, task.id, task.owner),
+);
+console.log(
+  `Demo Reel worker ready: record=${cfg.recordConcurrency}, plan=${cfg.planConcurrency}, browser auto-retry=0`,
+);
 const health = createServer((_req, res) => {
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify({ status: 'ok' }));

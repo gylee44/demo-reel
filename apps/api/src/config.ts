@@ -49,6 +49,12 @@ export function config() {
     quota: positive('DAILY_QUOTA', 3),
     planQuota: positive('DAILY_PLAN_QUOTA', 10),
     globalQuota: positive('GLOBAL_DAILY_JOBS', 50),
+    // Planning is mostly waiting on the provider, so several fit side by side. Recording holds a
+    // Chromium capturing 720p and an x264 encode, and the scene schedule is wall-clock, so a host
+    // that cannot render in real time does not just go slower — it records the wrong thing. One
+    // lane is what a Raspberry Pi has; raise it with the box, not with optimism.
+    planConcurrency: positive('PLAN_CONCURRENCY', 2),
+    recordConcurrency: positive('RECORD_CONCURRENCY', 1),
     pocMode,
     openaiKey: process.env.OPENAI_API_KEY || '',
     plannerModel: process.env.OPENAI_PLANNER_MODEL || 'gpt-5-mini',

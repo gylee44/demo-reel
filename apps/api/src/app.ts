@@ -21,7 +21,7 @@ import {
   type RecoveryPreview,
 } from '../../../packages/contracts/src/index.ts';
 import { affectedScenes } from '../../../packages/contracts/src/rules.ts';
-import { Database } from './db.ts';
+import { Database, PLAN_QUEUE, RECORD_QUEUE } from './db.ts';
 import type { Config } from './config.ts';
 import { AppError, encrypt, equal, hash, validatePocTarget } from './security.ts';
 import type {
@@ -139,8 +139,13 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
       return result;
     });
   }
-  const sendQueue = (payload: object, c: PoolClient) =>
-    queue.send('demo-reel', payload, {
+  // Planning goes to its own lane so it is not stuck behind a recording, and a recording is not
+  // delayed by somebody else's planning.
+  const sendQueue = (
+    payload: { type: 'operation' | 'job'; id: string; owner: string },
+    c: PoolClient,
+  ) =>
+    queue.send(payload.type === 'operation' ? PLAN_QUEUE : RECORD_QUEUE, payload, {
       retryLimit: 0,
       expireInSeconds: 600,
       db: { executeSql: (text, values) => c.query(text, values) },
