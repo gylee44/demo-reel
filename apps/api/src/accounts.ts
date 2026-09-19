@@ -63,7 +63,7 @@ export async function registerAccounts(app: FastifyInstance, db: Database, cfg: 
     );
     return r.rows[0] ?? null;
   }
-  app.addHook('preHandler', async (req) => {
+  app.addHook('preHandler', async (req, reply) => {
     if (
       cfg.pocMode ||
       !req.url.startsWith('/api/v1/') ||
@@ -72,8 +72,28 @@ export async function registerAccounts(app: FastifyInstance, db: Database, cfg: 
     )
       return;
     const user = await session(req);
-    if (!user) throw new AppError('UNAUTHORIZED', '로그인 후 계속해 주세요.', 401);
-    (req as any).accountOwner = user.id;
+    if (user) {
+      (req as any).accountOwner = user.id;
+      return;
+    }
+    // No sign-in is required to use the studio. A visitor still gets an identity of their own, in a
+    // signed cookie, so ownership checks keep one visitor's projects and videos out of another's.
+    const signed = req.cookies.dr_visitor;
+    const existing = signed ? req.unsignCookie(signed) : null;
+    if (existing?.valid && existing.value) {
+      (req as any).accountOwner = existing.value;
+      return;
+    }
+    const id = `visitor_${randomUUID()}`;
+    reply.setCookie('dr_visitor', id, {
+      signed: true,
+      httpOnly: true,
+      secure: cfg.webOrigin.startsWith('https:'),
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 604800,
+    });
+    (req as any).accountOwner = id;
   });
   async function issue(
     req: FastifyRequest,

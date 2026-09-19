@@ -51,14 +51,16 @@ it('hashes passwords with independent salts and rejects wrong passwords', async 
   expect(await passwordMatches(password, a)).toBe(true);
   expect(await passwordMatches('wrong', a)).toBe(false);
 });
-it('requires a service account and refuses private target addresses', async () => {
-  const denied = await app.inject({
+it('serves a visitor without an account and refuses private target addresses', async () => {
+  const anonymous = await app.inject({
     method: 'POST',
     url: '/api/v1/projects',
     headers: headers(),
     payload: { targetUrl: 'https://example.org', intent: '소개' },
   });
-  expect(denied.statusCode).toBe(401);
+  expect(anonymous.statusCode).toBe(201);
+  // The visitor is given an identity of their own so ownership still separates them.
+  expect(cookie(anonymous)).toContain('dr_visitor=');
   const u = await signup();
   for (const targetUrl of ['http://example.org', 'https://127.0.0.1', 'https://169.254.169.254']) {
     const r = await app.inject({
@@ -69,6 +71,31 @@ it('requires a service account and refuses private target addresses', async () =
     });
     expect(r.statusCode).toBe(400);
   }
+});
+it('keeps one visitor out of another visitor without any account', async () => {
+  const first = await app.inject({
+    method: 'POST',
+    url: '/api/v1/projects',
+    headers: headers(),
+    payload: { targetUrl: 'https://example.org/one', intent: '방문자 소개' },
+  });
+  expect(first.statusCode).toBe(201);
+  const mine = await app.inject({ url: '/api/v1/projects', headers: headers(cookie(first)) });
+  expect(mine.json().projects).toHaveLength(1);
+  // A second visitor arrives with no cookie and must not see the first one's work.
+  const other = await app.inject({ url: '/api/v1/projects', headers: headers() });
+  expect(other.statusCode).toBe(200);
+  expect(other.json().projects).toEqual([]);
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${first.json().projectId}/auth`,
+        headers: headers(cookie(other)),
+        payload: { mode: 'form', username: 'test', password: 'test' },
+      })
+    ).statusCode,
+  ).toBe(404);
 });
 it('isolates projects across accounts and keeps ownership after logging in again', async () => {
   const a = await signup(),
@@ -106,14 +133,15 @@ it('isolates projects across accounts and keeps ownership after logging in again
     (await app.inject({ url: '/api/v1/projects', headers: headers(cookie(logged)) })).json()
       .projects,
   ).toHaveLength(1);
-  await app.inject({
+  const out = await app.inject({
     method: 'POST',
     url: '/api/v1/account/logout',
     headers: headers(cookie(logged)),
   });
-  expect(
-    (await app.inject({ url: '/api/v1/projects', headers: headers(cookie(logged)) })).statusCode,
-  ).toBe(401);
+  // Signing out no longer locks the studio; it drops back to a fresh visitor who owns nothing.
+  const after = await app.inject({ url: '/api/v1/projects', headers: headers(cookie(out)) });
+  expect(after.statusCode).toBe(200);
+  expect(after.json().projects).toEqual([]);
 });
 it('revokes previous sessions after a password change', async () => {
   const a = await signup();
@@ -124,9 +152,10 @@ it('revokes previous sessions after a password change', async () => {
     payload: { currentPassword: password, newPassword: 'A new secret password 43' },
   });
   expect(r.statusCode).toBe(200);
-  expect(
-    (await app.inject({ url: '/api/v1/projects', headers: headers(a.cookie) })).statusCode,
-  ).toBe(401);
+  // The revoked session no longer reaches the account; it falls back to an empty visitor.
+  const revoked = await app.inject({ url: '/api/v1/projects', headers: headers(a.cookie) });
+  expect(revoked.statusCode).toBe(200);
+  expect(revoked.json().projects).toEqual([]);
   expect(
     (await app.inject({ url: '/api/v1/account/me', headers: headers(cookie(r)) })).json().user.id,
   ).toBe(a.id);

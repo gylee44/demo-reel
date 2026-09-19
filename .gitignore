@@ -21,3 +21,4 @@ minio-ca.crt
 .vercel
 .env*
 !.env.example
+MINIO-ENDPOINT-REQUEST.md
