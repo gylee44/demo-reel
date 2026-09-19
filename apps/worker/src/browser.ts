@@ -91,7 +91,13 @@ export function locate(page: Page, plan: Plan, id: string, outputs: Outputs): Lo
         exact: spec.exact,
       });
     case 'label':
-      return scope.getByLabel(value, { exact: spec.exact });
+      // A <label> that wraps its control takes that control's value into its accessible name, so
+      // the exact label observed on an empty form stops matching the moment the field is filled —
+      // which broke every scene that types into a field and then checks it. Anchor at the start so
+      // the typed text is tolerated without letting a longer, different label match.
+      return spec.exact
+        ? scope.getByLabel(new RegExp('^\\s*' + value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+        : scope.getByLabel(value, { exact: false });
     case 'testId':
       return scope.getByTestId(value);
     case 'css':
