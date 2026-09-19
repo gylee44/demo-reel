@@ -48,6 +48,31 @@ function declareDerivableFields(scenes: any[]) {
     preceding.set(scene.id, scene);
   }
 }
+/**
+ * The catalogue carries a few page-structure selectors so a scene can check that a screen is up.
+ * They are not controls: a fill aimed at the form element itself simply waits out its timeout, which
+ * is how a real run lost a scene. The schema cannot see this, so report it like a validation error.
+ */
+const STRUCTURE = new Set(['form', 'main', 'h1', 'header', 'body']);
+function interactionsOnPageStructure(plan: Plan): string[] {
+  const structural = new Set(
+    plan.locators
+      .filter((l) => l.strategy === 'css' && typeof l.value === 'string' && STRUCTURE.has(l.value))
+      .map((l) => l.id),
+  );
+  const problems: string[] = [];
+  for (const scene of plan.scenes)
+    for (const action of scene.actions)
+      if (
+        ['fill', 'click', 'select', 'press'].includes(action.type) &&
+        'locatorId' in action &&
+        structural.has(action.locatorId)
+      )
+        problems.push(
+          `Scene ${scene.id} action ${action.id}: ${action.type} targets the page-structure locator ${action.locatorId}. Only a form control can be typed into or clicked; use the locator for the field or button itself, and keep structure locators for readyConditions and visibility checks.`,
+        );
+  return problems;
+}
 export async function buildProjectPlan(
   browser: Browser,
   db: Database,
@@ -133,12 +158,16 @@ export async function buildProjectPlan(
     };
     const parsed = PlanSchema.safeParse(candidate);
     if (parsed.success) {
-      plan = parsed.data;
-      break;
-    }
-    corrections = parsed.error.issues.map((i) =>
-      i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message,
-    );
+      const unusable = interactionsOnPageStructure(parsed.data);
+      if (!unusable.length) {
+        plan = parsed.data;
+        break;
+      }
+      corrections = unusable;
+    } else
+      corrections = parsed.error.issues.map((i) =>
+        i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message,
+      );
     console.error(`[worker] plan draft rejected (attempt ${attempt + 1})`, corrections);
   }
   if (!plan)
