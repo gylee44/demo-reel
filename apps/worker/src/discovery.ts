@@ -45,11 +45,18 @@ export async function discover(
               e.getAttribute('aria-label') ||
               ('labels' in e
                 ? [...((e as HTMLInputElement).labels ?? [])]
-                    .map((l) => l.textContent)
+                    .map((l) => (l as HTMLElement).innerText ?? l.textContent)
                     .join(' ')
+                    .replace(/\s+/g, ' ')
                     .trim()
                 : ''),
-            text: (e.textContent ?? '').trim().slice(0, 150),
+            // The plan looks these up by accessible name, which treats a line break as a space.
+            // textContent joins the two halves of a wrapped heading with nothing, producing a
+            // string that can never match the element it came from, so read the rendered text.
+            text: ((e as HTMLElement).innerText ?? e.textContent ?? '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 150),
           }));
         });
         const evidenceId = `evidence_${randomUUID()}`;
