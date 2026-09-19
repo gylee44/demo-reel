@@ -27,7 +27,14 @@ import type {
   InternalJob,
   Artifact,
 } from '../../api/src/models.ts';
-import { launchBrowser, authenticate, newContext, locate, captureScene } from './browser.ts';
+import {
+  launchBrowser,
+  authenticate,
+  newContext,
+  locate,
+  captureScene,
+  type Elision,
+} from './browser.ts';
 import { renderScene, compose, storeArtifact, writeManifest, type Narration } from './media.ts';
 const uid = (s: string) => `${s}_${randomUUID()}`;
 function failure(error: unknown, sceneId: string | null = null): Failure {
@@ -237,6 +244,48 @@ export async function runJob(
           throw new AppError('AUTH_EXPIRED', '인증 자료가 삭제되었거나 만료되었습니다.');
       }
     }
+    /**
+     * A scene that broke has still been recorded up to the moment it broke, and its narration is
+     * already made. Render that much instead of dropping it: a reel one step short of the plan is
+     * worth more to the person waiting than a job that hands back no video at all. The last frame
+     * holds while the rest of the narration plays, which is what the freeze override is for.
+     */
+    async function salvage(
+      scene: Scene,
+      attempt: Attempt,
+      narration: Narration | undefined,
+      rawPath: string | undefined,
+      elisions: Elision[] | undefined,
+    ) {
+      if (!narration || !rawPath || !browser) return;
+      try {
+        const durationMs = narration.durationMs + scene.timing.tailHoldMs;
+        const rendered = await renderScene(
+          browser,
+          rawPath,
+          scene,
+          narration,
+          durationMs,
+          join(dir, `${scene.id}-salvage`),
+          { elisions, maxFreezeMs: durationMs },
+        );
+        const artifact = await storeArtifact(
+          db,
+          cfg,
+          owner,
+          id,
+          'clip',
+          rendered.path,
+          rendered.durationMs,
+        );
+        attempt.renderedArtifactId = artifact.artifactId;
+        attempt.durationMs = rendered.durationMs;
+        attempt.trimStartMs = rendered.trimStartMs;
+        attempt.status = 'degraded';
+      } catch (error) {
+        console.error(`[worker] salvage render failed scene=${scene.id}`, error);
+      }
+    }
     const blocked = new Set<string>();
     for (const scene of plan.scenes) {
       await check();
@@ -265,10 +314,10 @@ export async function runJob(
         await persist(db, record);
         continue;
       }
+      let n: Narration | undefined;
       try {
         let rawPath: string;
         let durationMs: number;
-        let n: Narration;
         if (!captureIds.has(scene.id) && prior) {
           Object.assign(attempt, {
             ...prior,
@@ -343,6 +392,7 @@ export async function runJob(
           durationMs = captured.durationMs;
           outputs[scene.id] = captured.outputs;
           attempt.outputs = captured.outputs;
+          attempt.elisions = captured.elisions;
           attempt.effectOutcome = scene.effects.writes.length ? 'confirmed' : 'none';
           attempt.failure = null;
           const raw = await storeArtifact(db, cfg, owner, id, 'raw', rawPath);
@@ -361,7 +411,10 @@ export async function runJob(
           n,
           durationMs,
           join(dir, `${scene.id}-render`),
-          attempt.trimStartMs === undefined ? undefined : attempt.trimStartMs / 1000,
+          {
+            knownOffset: attempt.trimStartMs === undefined ? undefined : attempt.trimStartMs / 1000,
+            elisions: attempt.elisions,
+          },
         );
         const artifact = await storeArtifact(
           db,
@@ -400,13 +453,19 @@ export async function runJob(
         if (attempt.effectOutcome === 'unknown')
           attempt.failure.suggestedAction =
             '데이터가 이미 변경되었을 수 있습니다. 앱의 결과를 확인한 뒤 복구해 주세요.';
+        await salvage(scene, attempt, n, (error as any).rawPath, (error as any).elisions);
         affectedScenes(plan, [scene.id])
           .filter((id) => id !== scene.id)
           .forEach((id) => blocked.add(id));
       }
       await persist(db, record);
     }
-    if (job.sceneAttempts.some((a) => a.status !== 'succeeded')) {
+    // Compose whatever came out with a clip in it. A scene that failed outright, or one that was
+    // skipped because it depended on that scene, simply is not in the reel; the job still reports
+    // what went wrong so the person can re-record just that scene, but it hands them a video first.
+    const usable = job.sceneAttempts.filter((a) => a.renderedArtifactId);
+    const incomplete = job.sceneAttempts.some((a) => a.status !== 'succeeded');
+    if (!usable.length) {
       job.status = 'needs_action';
       job.failure =
         job.sceneAttempts.find((a) => a.failure)?.failure ??
@@ -415,17 +474,25 @@ export async function runJob(
       job.stage = 'compose';
       await persist(db, record);
       const clips = [];
-      for (const a of job.sceneAttempts) {
+      for (const a of usable) {
         const artifact = await db.get<Artifact>('artifact', a.renderedArtifactId!, owner);
         if (!artifact) throw new AppError('RENDER_FAILED', '클립이 없습니다.');
         clips.push({ path: await materializeArtifact(cfg, artifact), durationMs: a.durationMs! });
       }
-      const final = await compose(clips, join(dir, 'final.mp4'));
+      // The length floor is an acceptance check on a complete run, and planning now measures it
+      // from the narration. Applying it again to a reel that is already short a scene would throw
+      // away the one thing still worth delivering.
+      const final = await compose(clips, join(dir, 'final.mp4'), !incomplete);
       job.stage = 'verify';
       await persist(db, record);
       const out = await storeArtifact(db, cfg, owner, id, 'final', final.path, final.durationMs);
       job.outputArtifactId = out.artifactId;
-      job.status = 'succeeded';
+      // The video is there either way; needs_action says a scene in it is not what was planned.
+      job.status = incomplete ? 'needs_action' : 'succeeded';
+      if (incomplete)
+        job.failure =
+          job.sceneAttempts.find((a) => a.failure)?.failure ??
+          failure(new AppError('PRECONDITION_FAILED', '일부 장면을 실행하지 못했습니다.'));
       await writeManifest(join(dir, 'manifest.json'), {
         planId: plan.planId,
         revision: plan.revision,

@@ -177,7 +177,7 @@ it('records real UI, finds the video sync point, burns Korean captions and produ
     narration,
     captured.durationMs,
     join(dir, 'render'),
-    offset,
+    { knownOffset: offset },
   );
   const final = await compose(
     [{ path: rendered.path, durationMs: rendered.durationMs }],
@@ -192,7 +192,83 @@ it('records real UI, finds the video sync point, burns Korean captions and produ
   expect((await readFile(join(dir, 'render/caption-0.png'))).length).toBeGreaterThan(1000);
   const raw = await probe(captured.rawPath);
   expect(raw.streams[0].width).toBe(1280);
-}, 90000);
+  // A waiting stretch is cut out and the two sides spliced together, so the clip keeps the length
+  // the narration asks for while consuming that much less of the recording.
+  const cut = { startMs: 400, endMs: 1400 };
+  const spliced = await renderScene(
+    browser,
+    captured.rawPath,
+    scene,
+    narration,
+    captured.durationMs,
+    join(dir, 'spliced'),
+    { knownOffset: offset, elisions: [cut] },
+  );
+  expect(Math.abs(spliced.durationMs - rendered.durationMs)).toBeLessThan(250);
+  expect((await probe(spliced.path)).streams[0].width).toBe(1280);
+  // ...and the source it no longer has is really gone: cut away more than the scene may hold as a
+  // frozen frame and the render refuses, which it could only know by accounting for the cut.
+  await expect(
+    renderScene(
+      browser,
+      captured.rawPath,
+      scene,
+      narration,
+      captured.durationMs,
+      join(dir, 'over'),
+      {
+        knownOffset: offset,
+        elisions: [{ startMs: 0, endMs: captured.durationMs + scene.timing.maxFreezeMs }],
+      },
+    ),
+  ).rejects.toMatchObject({ code: 'DURATION_EXCEEDED' });
+}, 120000);
+it('waits out a slow screen without spending the scene on it, and cuts the wait from the clip', async () => {
+  const fault = async (slowTasksMs: number) =>
+    expect(
+      (
+        await demo.inject({
+          method: 'POST',
+          url: '/__test/fault',
+          headers: { 'x-demo-fixture': 'reset-v1' },
+          payload: { slowTasksMs },
+        })
+      ).statusCode,
+    ).toBe(200);
+  const state = await authenticate(browser, db, cfg, plan, owner),
+    scene = structuredClone(plan.scenes[0]),
+    dir = join(cfg.dataDir, 'browser-media-test', randomUUID());
+  // Open the list and wait for its heading. The fixture holds the task fetch for four seconds, so
+  // the app is on a loading screen for most of the scene — the shape of every generate-and-wait UI.
+  scene.actions = [
+    { ...scene.actions[0], atMs: 200, timeoutMs: 5000 },
+    {
+      id: 'await_list',
+      atMs: 600,
+      timeoutMs: 3000,
+      type: 'waitFor',
+      condition: { type: 'visible', locatorId: 'tasks-heading' },
+    } as (typeof scene.actions)[number],
+  ];
+  const narration = await fixedNarration(scene);
+  await fault(4000);
+  let captured;
+  try {
+    captured = await captureScene(browser, plan, scene, state, {}, dir, narration.durationMs, {
+      check: async () => {},
+      beforeMutation: async () => {
+        throw new Error('Unexpected mutation');
+      },
+    });
+  } finally {
+    await fault(0);
+  }
+  // The action's own 3s timeout would have lost the scene; waiting is allowed to take longer.
+  const cut = captured.elisions.reduce((sum, e) => sum + (e.endMs - e.startMs), 0);
+  expect(cut).toBeGreaterThan(2000);
+  // And the wait is not in the scene's time: the clip still runs to the narration, not past it.
+  expect(captured.durationMs).toBe(narration.durationMs + scene.timing.tailHoldMs);
+}, 120000);
 it('does not silently use fixed audio for edited narration', async () => {
   const scene = structuredClone(plan.scenes[0]);
   scene.narration.text = '다른 설명';

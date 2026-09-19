@@ -23,6 +23,9 @@ export async function createDemoApp(db: Database, cfg: Config) {
   if (!(await db.pool.query('SELECT 1 FROM dr_demo_tasks LIMIT 1')).rowCount) await resetDemo(db);
   const app = Fastify({ logger: false });
   let brokenOverview = false;
+  // Fixture-only: a real app makes you wait while it works, and the recorder has to handle that
+  // without spending the scene on it. This is the cheapest honest way to reproduce the wait.
+  let slowTasksMs = 0;
   await app.register(cookie, {
     secret: createHash('sha256').update(`${cfg.key}:demo`).digest('hex'),
   });
@@ -50,9 +53,12 @@ export async function createDemoApp(db: Database, cfg: Config) {
     return { name: '김데모' };
   });
   app.get('/demo-api/me', async () => ({ name: '김데모', workspace: '포트폴리오 프로젝트' }));
-  app.get('/demo-api/tasks', async () => ({
-    tasks: (await db.pool.query('SELECT * FROM dr_demo_tasks ORDER BY created_at,id')).rows,
-  }));
+  app.get('/demo-api/tasks', async () => {
+    if (slowTasksMs) await new Promise((resolve) => setTimeout(resolve, slowTasksMs));
+    return {
+      tasks: (await db.pool.query('SELECT * FROM dr_demo_tasks ORDER BY created_at,id')).rows,
+    };
+  });
   app.post('/demo-api/tasks', async (req, reply) => {
     const b = z
       .object({ title: z.string().min(1).max(100), description: z.string().max(1000) })
@@ -85,14 +91,21 @@ export async function createDemoApp(db: Database, cfg: Config) {
     if (!cfg.pocMode || req.headers['x-demo-fixture'] !== 'reset-v1') return reply.code(403).send();
     await resetDemo(db);
     brokenOverview = false;
+    slowTasksMs = 0;
     return { reset: true };
   });
   app.post('/__test/fault', async (req, reply) => {
     if (!cfg.pocMode || req.headers['x-demo-fixture'] !== 'reset-v1') return reply.code(403).send();
-    const input = z.strictObject({ brokenOverview: z.boolean() }).safeParse(req.body);
+    const input = z
+      .strictObject({
+        brokenOverview: z.boolean().optional(),
+        slowTasksMs: z.number().int().min(0).max(20000).optional(),
+      })
+      .safeParse(req.body);
     if (!input.success) return reply.code(400).send();
-    brokenOverview = input.data.brokenOverview;
-    return { brokenOverview };
+    brokenOverview = input.data.brokenOverview ?? brokenOverview;
+    slowTasksMs = input.data.slowTasksMs ?? slowTasksMs;
+    return { brokenOverview, slowTasksMs };
   });
   app.get('/health', async () => ({ status: 'ok' }));
   app.get('/app.js', async (_req, reply) =>

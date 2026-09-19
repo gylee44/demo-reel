@@ -277,7 +277,7 @@ export type Attempt = {
   jobId: string;
   sceneId: string;
   planRevision: number;
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'succeeded' | 'degraded' | 'failed' | 'skipped';
   stage: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -289,6 +289,7 @@ export type Attempt = {
   failure: Failure | null;
   reusedFromAttemptId?: string;
   captureHash?: string;
+  elisions?: { startMs: number; endMs: number }[];
   durationMs?: number;
   trimStartMs?: number;
 };

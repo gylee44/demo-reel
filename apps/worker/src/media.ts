@@ -9,6 +9,7 @@ import type { Database } from '../../api/src/db.ts';
 import type { Artifact } from '../../api/src/models.ts';
 import { hash, AppError } from '../../api/src/security.ts';
 import type { Scene } from '../../../packages/contracts/src/index.ts';
+import type { Elision } from './browser.ts';
 import { totalDuration } from '../../../packages/contracts/src/rules.ts';
 import { uploadArtifact } from '../../../packages/runtime/src/storage.ts';
 const exec = promisify(execFile);
@@ -101,6 +102,48 @@ export async function captionPng(browser: Browser, text: string, path: string, a
     await context.close();
   }
 }
+export type RenderOptions = {
+  knownOffset?: number;
+  /** Stretches of recorded scene time to cut out, measured from the sync point. */
+  elisions?: Elision[];
+  /** Overridden only by the fallback render, where holding the last frame beats having no clip. */
+  maxFreezeMs?: number;
+};
+/** Sorted, non-overlapping, positive-length cuts: overlapping ones would trim each other's source. */
+function mergeCuts(elisions: Elision[]): Elision[] {
+  const merged: Elision[] = [];
+  for (const cut of [...elisions].sort((a, b) => a.startMs - b.startMs)) {
+    if (cut.endMs <= cut.startMs) continue;
+    const last = merged[merged.length - 1];
+    if (last && cut.startMs <= last.endMs) last.endMs = Math.max(last.endMs, cut.endMs);
+    else merged.push({ ...cut });
+  }
+  return merged;
+}
+/**
+ * The recording with the cuts taken out, as one filter chain ending in [kept]. Each kept stretch is
+ * trimmed from its own copy of the input — a stream can only be consumed once, hence the split — is
+ * normalised to the output format before concat, which will not join streams that disagree, and is
+ * rebased to zero so the pieces butt up against each other instead of leaving the gap behind.
+ */
+function keptVideo(offset: number, cuts: Elision[]): string[] {
+  const at = (ms: number) => (offset + ms / 1000).toFixed(3);
+  if (!cuts.length) return [`[0:v]trim=start=${offset.toFixed(3)},setpts=PTS-STARTPTS[kept]`];
+  const spans = cuts.map((cut, i) => ({
+    start: i ? at(cuts[i - 1].endMs) : offset.toFixed(3),
+    end: at(cut.startMs),
+  }));
+  spans.push({ start: at(cuts[cuts.length - 1].endMs), end: '' });
+  const keep = spans.filter((s) => !s.end || Number(s.end) > Number(s.start));
+  return [
+    `[0:v]split=${keep.length}${keep.map((_, i) => `[p${i}]`).join('')}`,
+    ...keep.map(
+      (s, i) =>
+        `[p${i}]trim=start=${s.start}${s.end ? `:end=${s.end}` : ''},setpts=PTS-STARTPTS,fps=30,scale=1280:720,format=yuv420p[g${i}]`,
+    ),
+    `${keep.map((_, i) => `[g${i}]`).join('')}concat=n=${keep.length}:v=1:a=0[kept]`,
+  ];
+}
 export async function renderScene(
   browser: Browser,
   rawPath: string,
@@ -108,13 +151,15 @@ export async function renderScene(
   narration: Narration,
   durationMs: number,
   dir: string,
-  knownOffset?: number,
+  { knownOffset, elisions = [], maxFreezeMs = scene.timing.maxFreezeMs }: RenderOptions = {},
 ) {
   await mkdir(dir, { recursive: true });
   const offset = knownOffset ?? (await syncOffset(rawPath)),
     metadata = await probe(rawPath);
-  const sourceMs = (Number(metadata.format.duration) - offset) * 1000;
-  if (durationMs - sourceMs > scene.timing.maxFreezeMs)
+  const cuts = mergeCuts(elisions);
+  const cutMs = cuts.reduce((sum, c) => sum + (c.endMs - c.startMs), 0);
+  const sourceMs = (Number(metadata.format.duration) - offset) * 1000 - cutMs;
+  if (durationMs - sourceMs > maxFreezeMs)
     throw new AppError(
       'DURATION_EXCEEDED',
       '원본 영상이 부족해 제한된 정지 화면 길이를 초과합니다.',
@@ -128,7 +173,8 @@ export async function renderScene(
   const sec = (durationMs / 1000).toFixed(3),
     output = join(dir, 'clip.mp4');
   const filter = [
-    `[0:v]trim=start=${offset.toFixed(3)},setpts=PTS-STARTPTS,scale=1280:720,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=${scene.timing.maxFreezeMs / 1000},trim=duration=${sec}[v0]`,
+    ...keptVideo(offset, cuts),
+    `[kept]scale=1280:720,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=${maxFreezeMs / 1000},trim=duration=${sec}[v0]`,
   ];
   for (let i = 0; i < pngs.length; i++)
     filter.push(
@@ -188,7 +234,10 @@ export async function compose(
   output: string,
   enforcePocLength = true,
 ) {
-  const duration = totalDuration(clips.map((c) => c.durationMs));
+  const duration = totalDuration(
+    clips.map((c) => c.durationMs),
+    enforcePocLength ? 75000 : 180000,
+  );
   if (enforcePocLength && duration < 45000)
     throw new AppError(
       'DURATION_EXCEEDED',

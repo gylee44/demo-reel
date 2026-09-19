@@ -27,7 +27,9 @@ const cfg = {
 const db = new Database(cfg.databaseUrl),
   app = Fastify(),
   owner = `test_${randomUUID()}`,
-  authRef = `auth_${randomUUID()}`;
+  authRef = `auth_${randomUUID()}`,
+  // A finished job discards the credential it used, so a second run needs its own copy.
+  salvageAuthRef = `auth_${randomUUID()}`;
 let browser: Browser, origin: string, project: Project;
 beforeAll(async () => {
   await db.init();
@@ -100,20 +102,21 @@ beforeAll(async () => {
       successTarget: { strategy: 'css', value: 'h1' },
     },
   };
-  await db.put(
-    'auth',
-    authRef,
-    owner,
-    {
-      authRef,
+  for (const ref of [authRef, salvageAuthRef])
+    await db.put(
+      'auth',
+      ref,
       owner,
-      projectId: project.projectId,
-      mode: 'form',
-      ciphertext: encrypt(secret, cfg.key),
-      expiresAt: new Date(Date.now() + 600000).toISOString(),
-    } satisfies AuthRecord,
-    project.projectId,
-  );
+      {
+        authRef: ref,
+        owner,
+        projectId: project.projectId,
+        mode: 'form',
+        ciphertext: encrypt(secret, cfg.key),
+        expiresAt: new Date(Date.now() + 600000).toISOString(),
+      } satisfies AuthRecord,
+      project.projectId,
+    );
   browser = await launchBrowser();
 });
 afterAll(async () => {
@@ -365,4 +368,133 @@ it('runs the service pipeline with actual browser capture, dynamic speech transp
       2,
     ),
   );
+}, 180000);
+
+it('still delivers a video when one scene breaks, and marks that scene instead of losing the job', async () => {
+  const localDir = join(cfg.dataDir, 'salvage-test');
+  await mkdir(localDir, { recursive: true });
+  const speechPath = join(localDir, 'speech.mp3');
+  await promisify(execFile)('ffmpeg', [
+    '-v',
+    'error',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=16',
+    '-c:a',
+    'libmp3lame',
+    speechPath,
+  ]);
+  const bytes = await readFile(speechPath);
+  const auth = {
+    mode: 'form' as const,
+    authRef: salvageAuthRef,
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+  };
+  const target = { baseUrl: project.targetUrl, allowedOrigins: [origin] };
+  const state = await authenticate(browser, db, cfg, { target, auth }, owner);
+  const observations = await discover(browser, target, state, []);
+  const heading = observations[0].locators.find((l) => l.value === 'h1')!;
+  for (const observation of observations)
+    await db.put('observation', observation.id, owner, observation, project.projectId);
+  // A locator for something the page does not have: the middle scene records, then fails its own
+  // assertion — the ordinary way a scene breaks once the app has moved on from what was observed.
+  const missing = { ...heading, id: 'absent_heading', value: 'h2.not-here' };
+  const { PlanSchema } = await import('../../packages/contracts/src/index.ts');
+  const plan = PlanSchema.parse({
+    schemaVersion: '0.1',
+    planId: `plan_${randomUUID()}`,
+    projectId: project.projectId,
+    revision: 1,
+    title: '한 장면이 깨져도 남는 영상',
+    intent: project.intent,
+    target,
+    auth,
+    format: {
+      width: 1280,
+      height: 720,
+      targetDurationMs: 60000,
+      maxDurationMs: 75000,
+      language: 'ko-KR',
+    },
+    locators: [...observations[0].locators, missing],
+    createdAt: new Date().toISOString(),
+    scenes: [1, 2, 3].map((i) => ({
+      id: `scene_${i}`,
+      title: `연구 노트 ${i}`,
+      purpose: '부분 실패 복원 검증',
+      entry: {
+        url: project.targetUrl,
+        readyConditions: [{ type: 'visible', locatorId: heading.id }],
+      },
+      dependsOn: [],
+      preconditions: [],
+      actions: [
+        {
+          id: `assert_${i}`,
+          type: 'assert',
+          atMs: 1200,
+          timeoutMs: 1500,
+          condition: { type: 'visible', locatorId: i === 2 ? missing.id : heading.id },
+        },
+      ],
+      postconditions: [{ type: 'visible', locatorId: heading.id }],
+      narration: { text: `연구 노트의 ${i}번째 화면입니다.`, estimatedDurationMs: 16000 },
+      timing: { maxDurationMs: 20000, tailHoldMs: 1000, maxFreezeMs: 1000 },
+      effects: { reads: ['노트'], writes: [], summary: '화면 열람' },
+      retryPolicy: 'read_only',
+      recoveryConditions: null,
+      outputs: [],
+    })),
+  });
+  const report = await validatePlan(browser, db, cfg, plan, owner);
+  const jobId = `job_${randomUUID()}`;
+  const record: InternalJob = {
+    owner,
+    projectId: project.projectId,
+    plan,
+    approval: {
+      approvalId: `approval_${randomUUID()}`,
+      planId: plan.planId,
+      revision: 1,
+      reportId: report.reportId,
+      approvedAt: new Date().toISOString(),
+      acceptedEffectsHash: hash(plan.scenes.map((s) => ({ id: s.id, effects: s.effects }))),
+    },
+    cancelRequested: false,
+    reservation: false,
+    snapshot: {
+      jobId,
+      version: 1,
+      status: 'queued',
+      stage: 'preflight',
+      planId: plan.planId,
+      revision: 1,
+      sceneAttempts: [],
+      completedSceneCount: 0,
+      totalSceneCount: 3,
+      outputArtifactId: null,
+      failure: null,
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+    },
+  };
+  await db.put('job', jobId, owner, record, project.projectId);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(bytes)),
+  );
+  await runJob(db, cfg, jobId, owner, { browserFactory: () => launchBrowser() });
+  vi.unstubAllGlobals();
+  const finished = await db.get<InternalJob>('job', jobId, owner);
+  // The broken scene is reported, not hidden...
+  expect(finished?.snapshot.status).toBe('needs_action');
+  const broken = finished!.snapshot.sceneAttempts.find((a) => a.sceneId === 'scene_2')!;
+  expect(broken.status).toBe('degraded');
+  expect(broken.failure?.code).toBe('PRECONDITION_FAILED');
+  // ...and what it managed to record is in the finished video, which exists.
+  expect(broken.renderedArtifactId).not.toBeNull();
+  expect(finished?.snapshot.outputArtifactId).not.toBeNull();
+  const artifact = await db.get<Artifact>('artifact', finished!.snapshot.outputArtifactId!, owner);
+  expect(artifact?.durationMs).toBeGreaterThan(30000);
 }, 180000);

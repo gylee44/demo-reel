@@ -140,6 +140,31 @@ export async function condition(
   } while (Date.now() < until);
   throw new AppError('PRECONDITION_FAILED', '예상한 화면 또는 데이터 상태를 확인하지 못했습니다.');
 }
+/**
+ * A long wait must still notice a cancelled job or an expired session, and `condition` polls without
+ * looking up. Slice the wait so the caller's check runs between slices, and only let the last slice
+ * report the failure — anything other than the screen not being there yet is already final.
+ */
+async function patientCondition(
+  page: Page,
+  plan: Plan,
+  c: Condition,
+  outputs: Outputs,
+  timeout: number,
+  check: () => Promise<void>,
+): Promise<void> {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const slice = Math.min(2500, end - Date.now());
+    try {
+      return await condition(page, plan, c, outputs, Math.max(1, slice));
+    } catch (error) {
+      if (!(error instanceof AppError) || error.code !== 'PRECONDITION_FAILED') throw error;
+      if (Date.now() >= end) throw error;
+    }
+    await check();
+  }
+}
 export async function uniqueTarget(
   page: Page,
   plan: Plan,
@@ -231,6 +256,24 @@ export type CaptureHooks = {
   beforeMutation: (a: Action) => Promise<void>;
   afterAction?: (a: Action, page: Page) => Promise<void>;
 };
+/** A stretch of scene time that is cut out of the clip, measured from the recording sync point. */
+export type Elision = { startMs: number; endMs: number };
+/**
+ * An app that generates something — a plan, a video, a report — makes the user wait far longer than
+ * any interaction does, and that wait is the one part of a demonstration nobody wants to watch. So
+ * it is neither charged to the scene budget nor kept in the clip: the recording is cut and the
+ * result is spliced on, which is what an editor would do by hand. Waiting can then be generous.
+ */
+const LOADING_WAIT_MS = 120000;
+/** Conditions checked after the actions: a result that never lands must not hold the queue open. */
+const POSTCONDITION_WAIT_MS = 30000;
+/** The entry screen is awaited before recording starts, so a slow first paint costs the clip nothing. */
+const ENTRY_WAIT_MS = 30000;
+/** Below this a wait reads as the app being responsive, and cutting it would only make the clip jumpy. */
+const ELIDE_AFTER_MS = 1500;
+/** Keep the head of a long wait, so the viewer sees the app working before the result appears. */
+const ELISION_LEAD_MS = 800;
+export type WaitOut = <T>(run: () => Promise<T>) => Promise<T>;
 async function action(
   page: Page,
   plan: Plan,
@@ -238,6 +281,7 @@ async function action(
   outputs: Outputs,
   hooks: CaptureHooks,
   mutating: boolean,
+  waitOut: WaitOut = (run) => run(),
 ) {
   if (a.type === 'navigate') {
     const target = new URL(resolveValue(a.url, outputs));
@@ -247,7 +291,20 @@ async function action(
     return;
   }
   if (a.type === 'assert' || a.type === 'waitFor') {
-    await condition(page, plan, a.condition, outputs, a.timeoutMs);
+    // waitFor is the plan saying the app needs a moment; assert is it saying the screen is already
+    // there. Only the first is allowed to take its time, and only the first is cut from the clip.
+    if (a.type === 'waitFor')
+      await waitOut(() =>
+        patientCondition(
+          page,
+          plan,
+          a.condition,
+          outputs,
+          Math.max(a.timeoutMs, LOADING_WAIT_MS),
+          hooks.check,
+        ),
+      );
+    else await condition(page, plan, a.condition, outputs, a.timeoutMs);
     // The narration is describing this element, so put it on camera. isVisible() is true for an
     // element sitting below the fold, and of the actions only a click scrolls to its own target,
     // so a scene that just waits for something can otherwise talk about an off-screen element.
@@ -289,13 +346,15 @@ export async function captureScene(
   const page = await context.newPage();
   page.setDefaultTimeout(7000);
   let actionId: string | null = null;
+  const elisions: Elision[] = [];
+  let elidedMs = 0;
   try {
     await page.goto(resolveValue(scene.entry.url, outputs), {
       waitUntil: 'domcontentloaded',
       timeout: 15000,
     });
     for (const c of [...scene.entry.readyConditions, ...scene.preconditions])
-      await condition(page, plan, c, outputs);
+      await condition(page, plan, c, outputs, ENTRY_WAIT_MS);
     await page.locator('#__dr_cursor').waitFor({ state: 'visible' });
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => {
@@ -309,10 +368,28 @@ export async function captureScene(
     await page.evaluate(() => document.getElementById('__dr_sync')?.remove());
     await page.waitForTimeout(120);
     const started = performance.now();
+    // Two clocks: recorded time, which the cuts are expressed in, and scene time, which is what the
+    // finished clip will show once the cuts are taken out. Everything the plan says — atMs, the
+    // budget, the timeouts — is about scene time, because that is the time the viewer spends.
+    const recordedMs = () => performance.now() - started;
+    const sceneMs = () => recordedMs() - elidedMs;
+    const waitOut: WaitOut = async (run) => {
+      const from = recordedMs();
+      try {
+        return await run();
+      } finally {
+        const spent = recordedMs() - from;
+        if (spent > ELIDE_AFTER_MS) {
+          const cut = { startMs: from + ELISION_LEAD_MS, endMs: recordedMs() };
+          elisions.push(cut);
+          elidedMs += cut.endMs - cut.startMs;
+        }
+      }
+    };
     async function waitTo(ms: number) {
-      while (performance.now() - started < ms) {
+      while (sceneMs() < ms) {
         await hooks.check();
-        const remaining = ms - (performance.now() - started);
+        const remaining = ms - sceneMs();
         if (remaining > 0) await page.waitForTimeout(Math.min(300, remaining));
       }
     }
@@ -320,30 +397,34 @@ export async function captureScene(
       actionId = a.id;
       await waitTo(a.atMs);
       await hooks.check();
-      if (performance.now() - started >= scene.timing.maxDurationMs)
+      if (sceneMs() >= scene.timing.maxDurationMs)
         throw new AppError('DURATION_EXCEEDED', '장면의 실행 시간이 초과되었습니다.');
-      const bounded = {
-        ...a,
-        timeoutMs: Math.max(
-          1,
-          Math.min(
-            a.timeoutMs,
-            scene.timing.maxDurationMs - Math.ceil(performance.now() - started),
-          ),
-        ),
-      };
-      await action(page, plan, bounded, outputs, hooks, scene.effects.writes.length > 0);
+      // A waitFor keeps its own generous allowance: the budget it would be clamped to is about how
+      // much video the scene may hold, and the waiting is not going to be in the video.
+      const bounded =
+        a.type === 'waitFor'
+          ? a
+          : {
+              ...a,
+              timeoutMs: Math.max(
+                1,
+                Math.min(a.timeoutMs, scene.timing.maxDurationMs - Math.ceil(sceneMs())),
+              ),
+            };
+      await action(page, plan, bounded, outputs, hooks, scene.effects.writes.length > 0, waitOut);
       await hooks.afterAction?.(a, page);
     }
     for (const c of scene.postconditions)
-      await condition(
-        page,
-        plan,
-        c,
-        outputs,
-        Math.max(1, scene.timing.maxDurationMs - Math.ceil(performance.now() - started)),
+      await waitOut(() =>
+        patientCondition(page, plan, c, outputs, POSTCONDITION_WAIT_MS, hooks.check),
       );
-    const durationMs = sceneDuration(scene, audioMs, Math.ceil(performance.now() - started));
+    // Clamped, not checked: the actions having run long is a reason to end the clip at the budget,
+    // never a reason to throw away a scene that did everything the plan asked of it.
+    const actionEndMs = Math.min(
+      Math.ceil(sceneMs()),
+      scene.timing.maxDurationMs - scene.timing.tailHoldMs,
+    );
+    const durationMs = sceneDuration(scene, audioMs, Math.max(0, actionEndMs));
     await waitTo(durationMs + 400);
     const result: Record<string, string> = {};
     for (const o of scene.outputs) {
@@ -366,16 +447,31 @@ export async function captureScene(
     const nextState = await context.storageState(),
       video = page.video()!;
     await context.close();
-    return { rawPath: await video.path(), durationMs, outputs: result, storageState: nextState };
+    return {
+      rawPath: await video.path(),
+      durationMs,
+      elisions,
+      outputs: result,
+      storageState: nextState,
+    };
   } catch (error) {
+    // Everything unexpected in here used to become ACTION_TIMEOUT, taking the real cause with it:
+    // the generic AppError replaces the original before `failure` in the runner ever sees it, so
+    // the one place a production failure could be read from went silent. Log it before replacing.
+    if (!(error instanceof AppError))
+      console.error(`[worker] capture failed scene=${scene.id} action=${actionId}`, error);
     const e =
       error instanceof AppError
         ? error
         : new AppError('ACTION_TIMEOUT', '화면 조작을 제한 시간 안에 마치지 못했습니다.');
     const screenshotPath = `${dir}/failure.png`;
+    const video = page.video();
     await page.screenshot({ path: screenshotPath }).catch(() => {});
     await context.close().catch(() => {});
-    Object.assign(e, { actionId, screenshotPath });
+    // What was recorded before the break is still a usable shot of the app, and the runner would
+    // rather cut the scene short than hand back a job with no video in it at all.
+    const rawPath = await video?.path().catch(() => undefined);
+    Object.assign(e, { actionId, screenshotPath, rawPath, elisions });
     throw e;
   }
 }

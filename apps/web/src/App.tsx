@@ -26,6 +26,7 @@ const statuses: Record<string, string> = {
   queued: '대기',
   running: '진행 중',
   succeeded: '완료',
+  degraded: '일부만 촬영됨',
   failed: '실패',
   skipped: '앞 장면 확인 필요',
   needs_action: '확인 필요',
@@ -1042,7 +1043,9 @@ export function App() {
                     {job.status === 'succeeded'
                       ? '실제 기능이 담긴 영상입니다.'
                       : job.status === 'needs_action'
-                        ? '이 부분을 확인해 주세요.'
+                        ? videoUrl
+                          ? '영상은 만들었어요. 이 장면만 확인해 주세요.'
+                          : '이 부분을 확인해 주세요.'
                         : job.status === 'cancelled'
                           ? '작업을 취소했습니다.'
                           : '검토한 계획을 영상으로 만들고 있어요.'}
