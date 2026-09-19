@@ -39,7 +39,12 @@ function declareDerivableFields(scenes: any[]) {
       if (!source.outputs.some((o: any) => o.name === output))
         source.outputs.push({ name: output, source: 'currentUrl', locatorId: null });
     }
-    if (scene.retryPolicy !== 'verify_before_repeat') scene.recoveryConditions = null;
+    // The rule binds both ways: recovery predicates exist exactly when the policy is
+    // verify_before_repeat. Drop predicates the policy does not call for, and when the policy asks
+    // for predicates the model did not supply, fall back to the policy that never auto-repeats.
+    if (scene.retryPolicy === 'verify_before_repeat') {
+      if (!scene.recoveryConditions) scene.retryPolicy = 'manual_reset';
+    } else scene.recoveryConditions = null;
     preceding.set(scene.id, scene);
   }
 }

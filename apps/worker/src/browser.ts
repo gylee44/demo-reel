@@ -242,6 +242,13 @@ async function action(
   }
   if (a.type === 'assert' || a.type === 'waitFor') {
     await condition(page, plan, a.condition, outputs, a.timeoutMs);
+    // The narration is describing this element, so put it on camera. isVisible() is true for an
+    // element sitting below the fold, and of the actions only a click scrolls to its own target,
+    // so a scene that just waits for something can otherwise talk about an off-screen element.
+    if ('locatorId' in a.condition && a.condition.type === 'visible')
+      await locate(page, plan, a.condition.locatorId, outputs)
+        .scrollIntoViewIfNeeded({ timeout: 2000 })
+        .catch(() => {});
     return;
   }
   if (a.type === 'scroll') {
