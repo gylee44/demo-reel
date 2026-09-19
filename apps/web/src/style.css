@@ -1214,3 +1214,15 @@ input[readonly] {
 .caption-editor .small-note {
   margin: 8px 0 0;
 }
+
+/* 입력칸 바로 아래 붙는 안내. 라벨과 한 덩어리로 읽히도록 위 여백을 좁게 둔다. */
+.field-hint {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #8a9580;
+  margin: -6px 0 16px;
+}
+.field-hint strong {
+  color: #6d7a62;
+  font-weight: 600;
+}

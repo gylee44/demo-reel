@@ -618,18 +618,29 @@ export function App() {
                     aria-label="앱 주소"
                     value={target}
                     onChange={(e) => setTarget(e.target.value)}
+                    placeholder="https://my-app.com"
                     required
                   />
                 </label>
+                <p className="field-hint">
+                  누구나 열 수 있는 <strong>https 주소</strong>여야 합니다. 사내망 주소나 내
+                  컴퓨터에서만 열리는 주소(localhost)는 연결할 수 없습니다.
+                </p>
                 <label>
                   보여줄 기능 한 문장
                   <textarea
-                    rows={2}
+                    rows={3}
                     value={intent}
                     onChange={(e) => setIntent(e.target.value)}
+                    placeholder="예: 새 할 일을 입력창에 적고 엔터를 눌러 추가한 뒤, 목록에 나타난 것까지 보여줘"
                     required
                   />
                 </label>
+                <p className="field-hint">
+                  <strong>무엇을 누르고 입력하는지, 그래서 화면에 무엇이 보이는지</strong>까지 적어
+                  주세요. 이 문장 하나로 1분 남짓한 장면 3~4개를 만듭니다. &ldquo;앱을 소개해
+                  줘&rdquo;처럼 막연하면 엉뚱한 화면을 고를 수 있습니다.
+                </p>
                 {!poc && (
                   <details className="discovery-settings">
                     <summary>탐색할 화면과 연결 도메인</summary>
