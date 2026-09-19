@@ -102,7 +102,8 @@ export async function buildProjectPlan(
   let draft: Awaited<ReturnType<typeof generateDraft>> | undefined;
   let plan: Plan | undefined;
   let corrections: string[] | undefined;
-  for (let attempt = 0; attempt < 3 && !plan; attempt++) {
+  // Two attempts, not three: each planning call can take 150s and the queue expires the job at 600s.
+  for (let attempt = 0; attempt < 2 && !plan; attempt++) {
     draft = await generateDraft(cfg, project.intent, visible, fetch, corrections);
     declareDerivableFields(draft.scenes);
     const candidate = {

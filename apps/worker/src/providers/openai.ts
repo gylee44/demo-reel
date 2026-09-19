@@ -92,6 +92,9 @@ export async function generateDraft(
       },
     },
     request,
+    // Planning is a reasoning call over the whole observed page, and the instructions have grown;
+    // measured runs land near two minutes, so the shared 90s default cut them off as a provider error.
+    150000,
   );
   if (Number(response.headers.get('content-length') || 0) > 500000)
     throw new AppError('PLAN_GENERATION_FAILED', '계획 응답이 너무 큽니다.');
