@@ -60,34 +60,53 @@ export async function buildProjectPlan(
       'TARGET_NOT_FOUND',
       '화면에서 시연할 대상을 찾지 못했습니다. 탐색 주소를 확인해 주세요.',
     );
-  const draft = await generateDraft(
-    cfg,
-    project.intent,
-    observations.map((o) => ({
-      ...o,
-      locators: o.locators.filter((l) => catalogue.some((c) => c.id === l.id)),
-    })),
-  );
-  const plan = PlanSchema.parse({
-    schemaVersion: '0.1',
-    planId: `plan_${randomUUID()}`,
-    projectId: project.projectId,
-    revision: 1,
-    title: draft.title,
-    intent: project.intent,
-    target,
-    auth: authData,
-    format: {
-      width: 1280,
-      height: 720,
-      targetDurationMs: 60000,
-      maxDurationMs: 75000,
-      language: 'ko-KR',
-    },
-    locators: catalogue,
-    scenes: draft.scenes,
-    createdAt: new Date().toISOString(),
-  });
+  const visible = observations.map((o) => ({
+    ...o,
+    locators: o.locators.filter((l) => catalogue.some((c) => c.id === l.id)),
+  }));
+  // The model does not always satisfy the plan schema; the cross-field rules (scene dependencies,
+  // recovery predicates) are the ones it misses. Feeding the rejections back is far cheaper than
+  // failing a job the user already waited a minute for.
+  let draft: Awaited<ReturnType<typeof generateDraft>> | undefined;
+  let plan: Plan | undefined;
+  let corrections: string[] | undefined;
+  for (let attempt = 0; attempt < 3 && !plan; attempt++) {
+    draft = await generateDraft(cfg, project.intent, visible, fetch, corrections);
+    const candidate = {
+      schemaVersion: '0.1',
+      planId: `plan_${randomUUID()}`,
+      projectId: project.projectId,
+      revision: 1,
+      title: draft.title,
+      intent: project.intent,
+      target,
+      auth: authData,
+      format: {
+        width: 1280,
+        height: 720,
+        targetDurationMs: 60000,
+        maxDurationMs: 75000,
+        language: 'ko-KR',
+      },
+      locators: catalogue,
+      scenes: draft.scenes,
+      createdAt: new Date().toISOString(),
+    };
+    const parsed = PlanSchema.safeParse(candidate);
+    if (parsed.success) {
+      plan = parsed.data;
+      break;
+    }
+    corrections = parsed.error.issues.map((i) =>
+      i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message,
+    );
+    console.error(`[worker] plan draft rejected (attempt ${attempt + 1})`, corrections);
+  }
+  if (!plan)
+    throw new AppError(
+      'PLAN_GENERATION_FAILED',
+      '계획을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    );
   assertExecutionPolicy(plan);
   for (const observation of observations)
     await db.put('observation', observation.id, project.owner, observation, project.projectId);
