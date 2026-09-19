@@ -103,7 +103,8 @@ export function App() {
     [intent, setIntent] = useState(''),
     [username, setUsername] = useState(''),
     [password, setPassword] = useState('');
-  const [mode, setMode] = useState<'form' | 'storage_state' | 'none'>('form'),
+  // Most first-time targets are public pages; start on the choice that needs nothing filled in.
+  const [mode, setMode] = useState<'form' | 'storage_state' | 'none'>('none'),
     [session, setSession] = useState<unknown>(null),
     [projectId, setProjectId] = useState('');
   const [poc, setPoc] = useState(false),
@@ -430,7 +431,17 @@ export function App() {
       !report.targets.some((t) => t.status === 'blocked');
   const connectionInputs = (
     <>
+      <p className="field-label">이 앱은 로그인이 필요한가요?</p>
       <div className="auth-choice">
+        {!poc && (
+          <button
+            type="button"
+            className={mode === 'none' ? 'active' : ''}
+            onClick={() => setMode('none')}
+          >
+            로그인 없음
+          </button>
+        )}
         <button
           type="button"
           className={mode === 'form' ? 'active' : ''}
@@ -445,16 +456,14 @@ export function App() {
         >
           세션 파일
         </button>
-        {!poc && (
-          <button
-            type="button"
-            className={mode === 'none' ? 'active' : ''}
-            onClick={() => setMode('none')}
-          >
-            로그인 없음
-          </button>
-        )}
       </div>
+      <p className="field-hint">
+        {mode === 'none'
+          ? '로그인 없이 열리는 화면만 촬영합니다. 가장 간단합니다.'
+          : mode === 'form'
+            ? '시연용으로 따로 만든 계정을 적어 주세요. 실제로 쓰는 계정은 쓰지 마세요. 아래에서 로그인 화면의 위치도 알려줘야 합니다.'
+            : '이미 로그인한 브라우저의 상태를 담은 파일입니다. 로그인 방법이 복잡해 계정만으로는 들어갈 수 없을 때 씁니다.'}
+      </p>
       {mode === 'form' ? (
         <div className="field-row">
           <label>
@@ -497,9 +506,7 @@ export function App() {
             }}
           />
         </label>
-      ) : (
-        <p className="small-note">로그인 없이 열리는 화면을 연결합니다.</p>
-      )}
+      ) : null}
       {!poc && mode !== 'none' && (
         <LoginProfileFields
           profile={loginProfile}
@@ -643,28 +650,40 @@ export function App() {
                 </p>
                 {!poc && (
                   <details className="discovery-settings">
-                    <summary>탐색할 화면과 연결 도메인</summary>
+                    <summary>다른 화면도 보여주고 싶다면 (선택)</summary>
+                    <p className="field-hint">
+                      비워두면 위에 적은 앱 주소 한 곳만 보고 계획을 만듭니다.{' '}
+                      <strong>대부분 비워두셔도 됩니다.</strong>
+                    </p>
                     <label>
-                      추가 탐색 주소 (한 줄에 하나)
+                      함께 둘러볼 화면 주소
                       <textarea
                         rows={3}
                         value={discoveryUrls}
                         onChange={(e) => setDiscoveryUrls(e.target.value)}
-                        placeholder="로그인 후 시연할 화면의 HTTPS 주소"
+                        placeholder="https://my-app.com/settings"
                       />
                     </label>
+                    <p className="field-hint">
+                      첫 화면에 없는 기능을 보여주고 싶을 때, 그 화면 주소를 한 줄에 하나씩 적어
+                      주세요.
+                    </p>
                     <label>
-                      추가 연결 도메인 (한 줄에 하나)
+                      허용할 다른 도메인
                       <textarea
                         rows={2}
                         value={allowedOrigins}
                         onChange={(e) => setAllowedOrigins(e.target.value)}
-                        placeholder="예: https://api.example.com"
+                        placeholder="https://api.my-app.com"
                       />
                     </label>
+                    <p className="field-hint">
+                      앱이 다른 주소의 이미지나 데이터를 불러와서 화면이 비어 보인다면, 그 주소를
+                      적어 주세요. 여기 적지 않은 곳에는 연결하지 않습니다.
+                    </p>
                     <p className="small-note">
-                      지정한 화면을 열람하며, 화면의 요소 이름과 기능 설명을 AI에 전달해 계획을
-                      만듭니다. 데이터 변경은 계획을 승인한 뒤 실행합니다.
+                      적어주신 화면을 열어 버튼·입력칸 같은 요소를 읽고 계획을 만듭니다. 데이터를
+                      바꾸는 동작은 계획을 승인하신 뒤에만 실행합니다.
                     </p>
                   </details>
                 )}

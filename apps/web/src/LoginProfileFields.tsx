@@ -25,7 +25,15 @@ export function LoginProfileFields({
           <input
             value={value.value}
             onChange={(e) => onChange({ ...profile, [name]: { ...value, value: e.target.value } })}
-            placeholder={name === 'successTarget' ? '예: [data-testid="dashboard"]' : undefined}
+            placeholder={
+              name === 'username'
+                ? '아이디'
+                : name === 'password'
+                  ? '비밀번호'
+                  : name === 'submit'
+                    ? '로그인'
+                    : '로그인 후에만 보이는 글자'
+            }
             required
           />
         </label>
@@ -58,9 +66,11 @@ export function LoginProfileFields({
   }
   return (
     <details className="login-profile" open>
-      <summary>로그인 화면 연결 설정</summary>
-      <p className="small-note">
-        앱마다 로그인 화면이 달라, 입력 대상과 로그인 성공 조건을 직접 지정합니다.
+      <summary>로그인 화면 알려주기</summary>
+      <p className="field-hint">
+        앱마다 로그인 화면이 달라서 자동으로 찾을 수 없습니다. <strong>어디에 무엇을 넣고, 무엇이
+        보이면 로그인에 성공한 것인지</strong> 알려주세요. &ldquo;찾는 방식&rdquo;은 잘 모르시면
+        그대로 두시고, 옆 칸에 화면에 적힌 글자를 그대로 적어보세요.
       </p>
       {!session && (
         <>

@@ -28,12 +28,17 @@ test('the studio opens without signing in and keeps the visitor across a reload'
   // Nothing stands between a first visit and the studio.
   await expect(page.getByRole('heading', { name: /링크 너머의 기능/ })).toBeVisible();
   await expect(page.getByLabel('이메일', { exact: true })).toHaveCount(0);
-  for (const label of ['앱 주소', '보여줄 기능 한 문장', '테스트 계정 ID', '테스트 비밀번호'])
+  for (const label of ['앱 주소', '보여줄 기능 한 문장'])
     await expect(page.getByLabel(label, { exact: true })).toHaveValue('');
-  await expect(page.getByText('로그인 화면 연결 설정')).toBeVisible();
   await expect(page.getByRole('button', { name: /실행 계획 만들기/ })).toBeDisabled();
-  await page.getByRole('button', { name: '로그인 없음', exact: true }).click();
-  await expect(page.getByText('로그인 없이 열리는 화면을 연결합니다.')).toBeVisible();
+  // A first visit starts on the choice that asks for nothing, and only that choice.
+  await expect(page.getByText('로그인 없이 열리는 화면만 촬영합니다.')).toBeVisible();
+  await expect(page.getByText('로그인 화면 알려주기')).toHaveCount(0);
+  await expect(page.getByLabel('테스트 계정 ID', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '테스트 계정', exact: true }).click();
+  await expect(page.getByText('로그인 화면 알려주기')).toBeVisible();
+  for (const label of ['테스트 계정 ID', '테스트 비밀번호'])
+    await expect(page.getByLabel(label, { exact: true })).toHaveValue('');
   await page.screenshot({ path: 'output/playwright/qa/service-connect.png', fullPage: true });
   const before = (await page.context().cookies()).find((c) => c.name === 'dr_visitor')?.value;
   expect(before).toBeTruthy();
