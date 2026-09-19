@@ -54,6 +54,22 @@ function declareDerivableFields(scenes: any[]) {
  * is how a real run lost a scene. The schema cannot see this, so report it like a validation error.
  */
 const STRUCTURE = new Set(['form', 'main', 'h1', 'header', 'body']);
+/**
+ * A scene runs as long as its narration, so the finished video is the narration end to end plus a
+ * tail per scene. Compose rejects anything under 45 seconds, which is the required output spec, and
+ * by then every scene has been recorded and rendered. Measure it here, where a retry costs one call.
+ */
+const SPOKEN_CHARS_PER_SECOND = 6;
+const TARGET_SECONDS = 52;
+function narrationTooShort(plan: Plan): string[] {
+  const characters = plan.scenes.reduce((sum, s) => sum + s.narration.text.length, 0);
+  const seconds = characters / SPOKEN_CHARS_PER_SECOND + plan.scenes.length;
+  if (seconds >= TARGET_SECONDS) return [];
+  const needed = Math.ceil((TARGET_SECONDS - seconds) * SPOKEN_CHARS_PER_SECOND);
+  return [
+    `The narration totals ${characters} characters across ${plan.scenes.length} scenes, about ${Math.round(seconds)} seconds of speech, and a video under 45 seconds is rejected. Add at least ${needed} more characters of narration, spread over the scenes or in an extra scene, keeping each scene within its own budget.`,
+  ];
+}
 function interactionsOnPageStructure(plan: Plan): string[] {
   const structural = new Set(
     plan.locators
@@ -132,8 +148,9 @@ export async function buildProjectPlan(
   let draft: Awaited<ReturnType<typeof generateDraft>> | undefined;
   let plan: Plan | undefined;
   let corrections: string[] | undefined;
-  // Two attempts, not three: each planning call can take 150s and the queue expires the job at 600s.
-  for (let attempt = 0; attempt < 2 && !plan; attempt++) {
+  // Three attempts fit the 600s queue expiry now that low reasoning effort lands a plan in about
+  // 40 seconds, and the checks below reject in ways a retry can actually act on.
+  for (let attempt = 0; attempt < 3 && !plan; attempt++) {
     draft = await generateDraft(cfg, project.intent, visible, fetch, corrections);
     declareDerivableFields(draft.scenes);
     const candidate = {
@@ -158,7 +175,10 @@ export async function buildProjectPlan(
     };
     const parsed = PlanSchema.safeParse(candidate);
     if (parsed.success) {
-      const unusable = interactionsOnPageStructure(parsed.data);
+      const unusable = [
+        ...interactionsOnPageStructure(parsed.data),
+        ...narrationTooShort(parsed.data),
+      ];
       if (!unusable.length) {
         plan = parsed.data;
         break;

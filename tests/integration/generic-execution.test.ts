@@ -151,35 +151,40 @@ it('builds and validates a provider plan against a second app, never importing d
     const input = JSON.parse(body.input);
     const observation = input.observations[0];
     const target = observation.locators.find((l: any) => l.value === 'h1');
-    const scenes = [
-      {
-        id: 'intro',
-        title: '연구 노트',
-        purpose: '현재 기능 소개',
-        entry: {
-          url: project.targetUrl,
-          readyConditions: [{ type: 'visible', locatorId: target.id }],
-        },
-        dependsOn: [],
-        preconditions: [],
-        actions: [
-          {
-            id: 'observe',
-            type: 'assert',
-            condition: { type: 'visible', locatorId: target.id },
-            atMs: 0,
-            timeoutMs: 5000,
-          },
-        ],
-        postconditions: [{ type: 'visible', locatorId: target.id }],
-        narration: { text: '연구 노트에서 기록을 관리합니다.', estimatedDurationMs: 6000 },
-        timing: { maxDurationMs: 20000, tailHoldMs: 1000, maxFreezeMs: 1000 },
-        effects: { reads: ['노트'], writes: [], summary: '화면 열람' },
-        retryPolicy: 'read_only',
-        recoveryConditions: null,
-        outputs: [],
-      },
+    // A scene lasts as long as its narration and caps at 30s, so a draft that meets the 45–75s
+    // output spec has to carry real sentences across several scenes.
+    const narrations = [
+      '연구 노트의 첫 화면입니다. 상단에는 제목이 있고 그 아래로 지금까지 남긴 기록이 차례로 놓입니다. 이 화면만 봐도 어떤 기능을 쓸 수 있는지, 무엇부터 눌러야 하는지 한눈에 파악할 수 있습니다.',
+      '기록을 살펴보겠습니다. 목록에서 원하는 항목을 고르면 본문과 작성한 시각이 함께 나타나므로, 언제 무엇을 적어 두었는지 흐름을 따라가며 확인하기 쉽습니다. 항목 사이를 오가도 목록은 그대로 남습니다.',
+      '마지막으로 화면 구성을 정리하겠습니다. 제목과 목록은 어떤 항목을 열어 보더라도 자리를 지키므로, 언제든 처음 상태로 돌아와 다른 기록을 다시 살펴볼 수 있습니다. 이것이 연구 노트의 기본 흐름입니다.',
     ];
+    const scenes = narrations.map((text, i) => ({
+      id: `intro_${i}`,
+      title: '연구 노트',
+      purpose: '현재 기능 소개',
+      entry: {
+        url: project.targetUrl,
+        readyConditions: [{ type: 'visible', locatorId: target.id }],
+      },
+      dependsOn: [],
+      preconditions: [],
+      actions: [
+        {
+          id: `observe_${i}`,
+          type: 'assert',
+          condition: { type: 'visible', locatorId: target.id },
+          atMs: 0,
+          timeoutMs: 5000,
+        },
+      ],
+      postconditions: [{ type: 'visible', locatorId: target.id }],
+      narration: { text, estimatedDurationMs: Math.round((text.length / 6) * 1000) },
+      timing: { maxDurationMs: 25000, tailHoldMs: 1000, maxFreezeMs: 1000 },
+      effects: { reads: ['노트'], writes: [], summary: '화면 열람' },
+      retryPolicy: 'read_only',
+      recoveryConditions: null,
+      outputs: [],
+    }));
     return new Response(
       JSON.stringify({
         status: 'completed',
