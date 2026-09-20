@@ -9,7 +9,7 @@ import type { Database } from '../../api/src/db.ts';
 import type { Artifact } from '../../api/src/models.ts';
 import { hash, AppError } from '../../api/src/security.ts';
 import type { Scene } from '../../../packages/contracts/src/index.ts';
-import type { Elision } from './browser.ts';
+import type { Elision, Focus } from './browser.ts';
 import { totalDuration } from '../../../packages/contracts/src/rules.ts';
 import { uploadArtifact } from '../../../packages/runtime/src/storage.ts';
 const exec = promisify(execFile);
@@ -108,7 +108,54 @@ export type RenderOptions = {
   elisions?: Elision[];
   /** Overridden only by the fallback render, where holding the last frame beats having no clip. */
   maxFreezeMs?: number;
+  /** Where the scene was looking and when, so the clip can lean in on it. */
+  focus?: Focus[];
 };
+const ZOOM = 1.3,
+  ZOOM_RAMP_MS = 500,
+  ZOOM_HOLD_MS = 1600;
+/**
+ * A full-page 720p shot of a web app makes the thing being clicked tiny, which is the difference
+ * between a demo that reads and one that does not. Lean in on what the cursor went to, then back
+ * out: a still frame of the whole page says less than a close one of the field being typed into.
+ *
+ * The zoom happens before the captions go on, so the subtitle stays full width and sharp. The
+ * expression is one per focus point, tried in order, and it falls through to 1 — no focus, no zoom,
+ * which is also what happens to a scene that only waits.
+ */
+export function zoomFilter(focus: Focus[]) {
+  const points = focus.filter((f) => f.width > 0 && f.height > 0).slice(0, 8);
+  if (!points.length) return null;
+  const ramp = ZOOM_RAMP_MS / 1000;
+  // Each point owns a window: ramp in, hold, ramp out, written as nested ifs because ffmpeg has
+  // no arrays. The clock is `time`, not `t`: zoompan does not define `t`, and using it fails the
+  // whole render with "Undefined constant" rather than simply not zooming.
+  const zoom = points.reduceRight((rest, f) => {
+    const start = f.atMs / 1000 - ramp,
+      full = f.atMs / 1000,
+      holdEnd = full + ZOOM_HOLD_MS / 1000,
+      end = holdEnd + ramp;
+    const rampIn = `(1+(${ZOOM}-1)*(time-${start.toFixed(3)})/${ramp})`;
+    const rampOut = `(${ZOOM}-(${ZOOM}-1)*(time-${holdEnd.toFixed(3)})/${ramp})`;
+    return `if(between(time,${start.toFixed(3)},${full.toFixed(3)}),${rampIn},if(between(time,${full.toFixed(3)},${holdEnd.toFixed(3)}),${ZOOM},if(between(time,${holdEnd.toFixed(3)},${end.toFixed(3)}),${rampOut},${rest})))`;
+  }, '1');
+  const centre = (pick: (f: Focus) => number, limit: number) =>
+    points.reduceRight(
+      (rest, f) => {
+        const from = f.atMs / 1000 - ramp,
+          to = f.atMs / 1000 + (ZOOM_HOLD_MS + ZOOM_RAMP_MS) / 1000;
+        return `if(between(time,${from.toFixed(3)},${to.toFixed(3)}),${Math.round(Math.min(Math.max(pick(f), 0), limit))},${rest})`;
+      },
+      String(Math.round(limit / 2)),
+    );
+  const cx = centre((f) => f.x + f.width / 2, 1280),
+    cy = centre((f) => f.y + f.height / 2, 720);
+  // Clamp so the crop never runs past an edge, which would letterbox the frame.
+  return (
+    `zoompan=z='${zoom}':x='min(max((${cx})-(iw/zoom/2),0),iw-iw/zoom)':` +
+    `y='min(max((${cy})-(ih/zoom/2),0),ih-ih/zoom)':d=1:s=1280x720:fps=30`
+  );
+}
 /** Sorted, non-overlapping, positive-length cuts: overlapping ones would trim each other's source. */
 function mergeCuts(elisions: Elision[]): Elision[] {
   const merged: Elision[] = [];
@@ -151,7 +198,12 @@ export async function renderScene(
   narration: Narration,
   durationMs: number,
   dir: string,
-  { knownOffset, elisions = [], maxFreezeMs = scene.timing.maxFreezeMs }: RenderOptions = {},
+  {
+    knownOffset,
+    elisions = [],
+    maxFreezeMs = scene.timing.maxFreezeMs,
+    focus = [],
+  }: RenderOptions = {},
 ) {
   await mkdir(dir, { recursive: true });
   const offset = knownOffset ?? (await syncOffset(rawPath)),
@@ -174,7 +226,7 @@ export async function renderScene(
     output = join(dir, 'clip.mp4');
   const filter = [
     ...keptVideo(offset, cuts),
-    `[kept]scale=1280:720,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=${maxFreezeMs / 1000},trim=duration=${sec}[v0]`,
+    `[kept]scale=1280:720,fps=30${zoomFilter(focus) ? ',' + zoomFilter(focus) : ''},format=yuv420p,tpad=stop_mode=clone:stop_duration=${maxFreezeMs / 1000},trim=duration=${sec}[v0]`,
   ];
   for (let i = 0; i < pngs.length; i++)
     filter.push(

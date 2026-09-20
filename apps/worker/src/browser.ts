@@ -261,7 +261,10 @@ async function moveCursor(page: Page, l: Locator) {
   box = await l.boundingBox();
   if (!box) throw new AppError('TARGET_NOT_FOUND', '대상이 이동하거나 사라졌습니다.');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  return box;
 }
+/** Where a scene was looking, in scene time, so the finished clip can lean in on it. */
+export type Focus = { atMs: number; x: number; y: number; width: number; height: number };
 export type CaptureHooks = {
   check: () => Promise<void>;
   beforeMutation: (a: Action) => Promise<void>;
@@ -293,6 +296,7 @@ async function action(
   hooks: CaptureHooks,
   mutating: boolean,
   waitOut: WaitOut = (run) => run(),
+  onFocus: (box: { x: number; y: number; width: number; height: number }) => void = () => {},
 ) {
   if (a.type === 'navigate') {
     const target = new URL(resolveValue(a.url, outputs));
@@ -330,7 +334,7 @@ async function action(
     return;
   }
   const l = await uniqueTarget(page, plan, a.locatorId, outputs, a.timeoutMs);
-  await moveCursor(page, l);
+  onFocus(await moveCursor(page, l));
   if (mutating) await hooks.beforeMutation(a);
   if (a.type === 'click') await l.click({ timeout: a.timeoutMs });
   if (a.type === 'fill') {
@@ -358,6 +362,7 @@ export async function captureScene(
   page.setDefaultTimeout(7000);
   let actionId: string | null = null;
   const elisions: Elision[] = [];
+  const focus: Focus[] = [];
   let elidedMs = 0;
   try {
     await page.goto(resolveValue(scene.entry.url, outputs), {
@@ -422,7 +427,16 @@ export async function captureScene(
                 Math.min(a.timeoutMs, scene.timing.maxDurationMs - Math.ceil(sceneMs())),
               ),
             };
-      await action(page, plan, bounded, outputs, hooks, scene.effects.writes.length > 0, waitOut);
+      await action(
+        page,
+        plan,
+        bounded,
+        outputs,
+        hooks,
+        scene.effects.writes.length > 0,
+        waitOut,
+        (box) => focus.push({ atMs: Math.round(sceneMs()), ...box }),
+      );
       await hooks.afterAction?.(a, page);
     }
     for (const c of scene.postconditions)
@@ -462,6 +476,7 @@ export async function captureScene(
       rawPath: await video.path(),
       durationMs,
       elisions,
+      focus,
       outputs: result,
       storageState: nextState,
     };

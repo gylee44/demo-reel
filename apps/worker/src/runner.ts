@@ -13,6 +13,7 @@ import {
   type Scene,
 } from '../../../packages/contracts/src/index.ts';
 import { buildProjectPlan } from './planning.ts';
+import type { Focus } from './browser.ts';
 import { validatePlan } from './validation.ts';
 export { validatePlan } from './validation.ts';
 import { narrate } from './narration.ts';
@@ -384,6 +385,7 @@ export async function runJob(
       try {
         let rawPath: string;
         let durationMs: number;
+        let focus: Focus[] = [];
         if (!captureIds.has(scene.id) && prior) {
           Object.assign(attempt, {
             ...prior,
@@ -459,6 +461,7 @@ export async function runJob(
           outputs[scene.id] = captured.outputs;
           attempt.outputs = captured.outputs;
           attempt.elisions = captured.elisions;
+          focus = captured.focus;
           attempt.effectOutcome = scene.effects.writes.length ? 'confirmed' : 'none';
           attempt.failure = null;
           const raw = await storeArtifact(db, cfg, owner, id, 'raw', rawPath);
@@ -480,6 +483,7 @@ export async function runJob(
           {
             knownOffset: attempt.trimStartMs === undefined ? undefined : attempt.trimStartMs / 1000,
             elisions: attempt.elisions,
+            focus,
           },
         );
         const artifact = await storeArtifact(
