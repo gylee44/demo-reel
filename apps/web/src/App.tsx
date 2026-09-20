@@ -95,6 +95,8 @@ function FailureEvidence({ artifactId }: { artifactId: string }) {
     </details>
   ) : null;
 }
+/** Signatures the API hands a share viewer so it can read the plan and the video the job points at. */
+type Share = { plan?: string; artifact?: string };
 /**
  * The studio is a single page, so the screen you would want to come back to — a plan under review,
  * a finished video — has no address of its own unless we give it one. Without that, a reload drops
@@ -130,6 +132,9 @@ export function App() {
     [dirty, setDirty] = useState(false),
     [selected, setSelected] = useState(0);
   const [job, setJob] = useState<Job | null>(null),
+    // Set only when this tab arrived by a share link: the viewer reads someone else's result and
+    // owns none of it, so the screen hides what it cannot do and signs the reads it can.
+    [share, setShare] = useState<Share | null>(null),
     [approvalId, setApprovalId] = useState(''),
     [videoUrl, setVideoUrl] = useState(''),
     [preview, setPreview] = useState<RecoveryPreview | null>(null),
@@ -153,37 +158,58 @@ export function App() {
       // An address wins over this tab's memory: it is what the visitor asked for.
       const linked = new URLSearchParams(location.search),
         linkedJob = linked.get('job'),
-        linkedPlan = linked.get('plan');
+        linkedPlan = linked.get('plan'),
+        e = linked.get('e'),
+        t = linked.get('t'),
+        token = e && t ? `e=${encodeURIComponent(e)}&t=${encodeURIComponent(t)}` : '';
       if (linkedJob || linkedPlan) {
         busyRef.current = true;
         setBusy(linkedJob ? '작업을 불러오고 있어요.' : '계획을 불러오고 있어요.');
         try {
           if (linkedJob) {
-            const previous = await api<Job>(`/jobs/${encodeURIComponent(linkedJob)}`),
-              result = await api(`/plans/${previous.planId}?revision=${previous.revision}`),
-              mine = await api<{ projects: { jobs: { jobId: string; approvalId: string }[] }[] }>(
-                '/projects',
-              );
+            const previous = await api<Job & { share?: Share }>(
+              `/jobs/${encodeURIComponent(linkedJob)}${token ? `?${token}` : ''}`,
+            );
+            // A shared viewer owns nothing here: the plan and the video come with their own
+            // signatures, and there is no approval to resume from.
+            const onward = previous.share;
+            const result = await api(
+              `/plans/${previous.planId}?revision=${previous.revision}` +
+                (onward?.plan ? `&${onward.plan}` : ''),
+            );
+            const mine = onward
+              ? null
+              : await api<{ projects: { jobs: { jobId: string; approvalId: string }[] }[] }>(
+                  '/projects',
+                );
             if (!active) return;
+            setShare(onward ?? null);
             setPlan(result.plan);
             setMode(result.plan.auth.mode);
             setProjectId(result.plan.projectId);
             setEffectsHash(result.effectsHash);
             setApprovalId(
-              mine.projects.flatMap((x) => x.jobs).find((j) => j.jobId === linkedJob)?.approvalId ??
-                '',
+              mine?.projects.flatMap((x) => x.jobs).find((j) => j.jobId === linkedJob)
+                ?.approvalId ?? '',
             );
             setJob(previous);
             setPage('progress');
           } else {
-            const result = await api(`/plans/${encodeURIComponent(linkedPlan!)}`);
+            const result = await api(
+              `/plans/${encodeURIComponent(linkedPlan!)}${token ? `?${token}` : ''}`,
+            );
             if (!active) return;
             setPlan(result.plan);
             setMode(result.plan.auth.mode);
             setProjectId(result.plan.projectId);
             setEffectsHash(result.effectsHash);
             setPage('review');
-            // A link carries the plan but not the check that lets it be approved, so run one.
+            // A link carries the plan but not the check that lets it be approved, so run one —
+            // unless this is a share viewer, who has nothing to approve and no quota to spend.
+            if (token) {
+              setShare({});
+              return;
+            }
             const pending = await api(`/plans/${result.plan.planId}/validations`, 'POST', {
                 revision: result.plan.revision,
               }),
@@ -258,9 +284,12 @@ export function App() {
       sessionStorage.setItem('demo-reel:job', JSON.stringify({ jobId: job.jobId, approvalId }));
   }, [job?.jobId, approvalId]);
   useEffect(() => {
+    // A share viewer's address carries the signature that got them in; rewriting it without that
+    // would break the link on the first reload.
+    if (share) return;
     const search = searchFor(page, plan?.planId, job?.jobId);
     if (location.search !== search) history.replaceState(null, '', location.pathname + search);
-  }, [page, plan?.planId, job?.jobId]);
+  }, [page, plan?.planId, job?.jobId, share]);
   async function work(label: string, fn: () => Promise<void>) {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -286,10 +315,13 @@ export function App() {
   }, [job?.jobId, job?.status]);
   useEffect(() => {
     if (job?.outputArtifactId)
-      api(`/artifacts/${job.outputArtifactId}/download`)
+      api(
+        `/artifacts/${job.outputArtifactId}/download` +
+          (share?.artifact ? `?${share.artifact}` : ''),
+      )
         .then((x) => setVideoUrl(x.url))
         .catch((e) => setError(e.message));
-  }, [job?.outputArtifactId]);
+  }, [job?.outputArtifactId, share?.artifact]);
   function authPayload() {
     return mode === 'form'
       ? { mode, username, password, ...(!poc ? { profile: loginProfile } : {}) }

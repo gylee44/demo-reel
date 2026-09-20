@@ -102,6 +102,34 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
       throw new AppError('UNAUTHORIZED', '작업 세션을 다시 시작해 주세요.', 401);
     return token.value;
   }
+  const SHARE_WINDOW_MS = 86400000;
+  function shareSignature(kind: string, id: string, expires: number) {
+    return createHmac('sha256', cfg.key).update(`share:${kind}:${id}:${expires}`).digest('hex');
+  }
+  /**
+   * A share link stands in for the visitor cookie on the read paths, so someone the maker sends a
+   * link to can open a finished video without having made it. It carries one record and nothing
+   * else — the signature names the kind, the id and the expiry, so it cannot be pointed at another
+   * record — and every path that changes something still goes through owner().
+   */
+  function shared(req: FastifyRequest, kind: string, id: string) {
+    const q = req.query as { e?: string; t?: string };
+    if (!q.e || !q.t) return false;
+    const expires = Number(q.e);
+    if (
+      !Number.isFinite(expires) ||
+      expires < Date.now() ||
+      expires > Date.now() + SHARE_WINDOW_MS ||
+      !equal(q.t, shareSignature(kind, id, expires))
+    )
+      throw new AppError('UNAUTHORIZED', '공유 링크가 만료되었거나 유효하지 않습니다.', 403);
+    return true;
+  }
+  async function readShared<T>(kind: string, id: string): Promise<T> {
+    const result = await db.get<T>(kind, id);
+    if (!result) throw new AppError('NOT_FOUND', '요청한 항목을 찾을 수 없습니다.', 404);
+    return result;
+  }
   async function get<T>(kind: string, id: string, o: string, c?: PoolClient): Promise<T> {
     const result = await db.get<T>(kind, id, o, c);
     if (!result) throw new AppError('NOT_FOUND', '요청한 항목을 찾을 수 없습니다.', 404);
@@ -356,10 +384,16 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
     return op;
   });
   app.get('/api/v1/plans/:id', async (req) => {
-    const o = owner(req),
-      meta = await get<PlanRecord>('plan', params(req).id, o);
+    const id = params(req).id,
+      open = shared(req, 'plan', id);
+    const meta = open
+      ? await readShared<PlanRecord>('plan', id)
+      : await get<PlanRecord>('plan', id, owner(req));
     const revision = Number((req.query as any).revision ?? meta.revision);
-    const p = await get<Plan>('plan_version', `${meta.planId}_${revision}`, o);
+    const versionId = `${meta.planId}_${revision}`;
+    const p = open
+      ? await readShared<Plan>('plan_version', versionId)
+      : await get<Plan>('plan_version', versionId, owner(req));
     return { plan: p, state: meta.state, effectsHash: effectsHash(p) };
   });
   app.put('/api/v1/plans/:id', async (req) => {
@@ -556,11 +590,50 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
     ),
   );
   app.get('/api/v1/jobs/:id', async (req, reply) => {
-    const r = await get<InternalJob>('job', params(req).id, owner(req)),
+    const id = params(req).id,
+      open = shared(req, 'job', id),
+      r = open
+        ? await readShared<InternalJob>('job', id)
+        : await get<InternalJob>('job', id, owner(req)),
       etag = `"${r.snapshot.jobId}-${r.snapshot.version}"`;
     reply.header('ETag', etag);
     if (req.headers['if-none-match'] === etag) return reply.code(304).send();
-    return r.snapshot;
+    // The result screen also reads the plan and the video, and a signature names one record only.
+    // Hand the viewer the matching two rather than making the link carry three of them.
+    if (!open) return r.snapshot;
+    const expires = Number((req.query as { e?: string }).e);
+    const link = (kind: string, target: string) =>
+      `e=${expires}&t=${shareSignature(kind, target, expires)}`;
+    return {
+      ...r.snapshot,
+      share: {
+        plan: link('plan', r.plan.planId),
+        ...(r.snapshot.outputArtifactId
+          ? { artifact: link('artifact', r.snapshot.outputArtifactId) }
+          : {}),
+      },
+    };
+  });
+  /**
+   * Minting is the owner's, so a link only ever exists because the person who made the video handed
+   * it out. The plan travels with the job because the result screen reads both.
+   */
+  app.post('/api/v1/jobs/:id/shares', async (req) => {
+    const o = owner(req),
+      id = params(req).id,
+      job = await get<InternalJob>('job', id, o);
+    const expires = Date.now() + SHARE_WINDOW_MS;
+    const link = (kind: string, target: string) =>
+      `e=${expires}&t=${shareSignature(kind, target, expires)}`;
+    return {
+      job: link('job', id),
+      plan: link('plan', job.plan.planId),
+      ...(job.snapshot.outputArtifactId
+        ? { artifact: link('artifact', job.snapshot.outputArtifactId) }
+        : {}),
+      url: `${cfg.webOrigin}/?job=${encodeURIComponent(id)}&${link('job', id)}`,
+      expiresAt: new Date(expires).toISOString(),
+    };
   });
   app.post('/api/v1/jobs/:id/cancel', async (req, reply) => {
     const o = owner(req);
@@ -801,7 +874,10 @@ export async function createApp(db: Database, queue: PgBoss, cfg: Config) {
     ),
   );
   app.get('/api/v1/artifacts/:id/download', async (req) => {
-    const artifact = await get<Artifact>('artifact', params(req).id, owner(req));
+    const id = params(req).id,
+      artifact = shared(req, 'artifact', id)
+        ? await readShared<Artifact>('artifact', id)
+        : await get<Artifact>('artifact', id, owner(req));
     if (Date.parse(artifact.expiresAt) < Date.now())
       throw new AppError('EXPIRED', '파일 보관 기간이 지났습니다.', 410);
     if (artifact.objectKey)
