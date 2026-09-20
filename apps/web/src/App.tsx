@@ -135,6 +135,7 @@ export function App() {
     // Set only when this tab arrived by a share link: the viewer reads someone else's result and
     // owns none of it, so the screen hides what it cannot do and signs the reads it can.
     [share, setShare] = useState<Share | null>(null),
+    [restored, setRestored] = useState(false),
     [approvalId, setApprovalId] = useState(''),
     [videoUrl, setVideoUrl] = useState(''),
     [preview, setPreview] = useState<RecoveryPreview | null>(null),
@@ -274,7 +275,9 @@ export function App() {
         if (active) setError('이전 작업을 불러오지 못했습니다. 연결부터 다시 시작해 주세요.');
       }
     };
-    void restore();
+    void restore().finally(() => {
+      if (active) setRestored(true);
+    });
     return () => {
       active = false;
     };
@@ -284,12 +287,12 @@ export function App() {
       sessionStorage.setItem('demo-reel:job', JSON.stringify({ jobId: job.jobId, approvalId }));
   }, [job?.jobId, approvalId]);
   useEffect(() => {
-    // A share viewer's address carries the signature that got them in; rewriting it without that
-    // would break the link on the first reload.
-    if (share) return;
+    // Two addresses are not ours to rewrite: one carrying a share signature, which the link needs
+    // to survive a reload, and the one we were opened with before restoring from it has finished.
+    if (new URLSearchParams(location.search).has('t') || !restored) return;
     const search = searchFor(page, plan?.planId, job?.jobId);
     if (location.search !== search) history.replaceState(null, '', location.pathname + search);
-  }, [page, plan?.planId, job?.jobId, share]);
+  }, [page, plan?.planId, job?.jobId, restored]);
   async function work(label: string, fn: () => Promise<void>) {
     if (busyRef.current) return;
     busyRef.current = true;
