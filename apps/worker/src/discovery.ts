@@ -30,6 +30,30 @@ export async function discover(
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
         await page.locator('body').waitFor({ state: 'visible' });
+        // A single-page app paints a shell first and fetches what the screen is actually about
+        // afterwards, so reading the DOM here sees a spinner instead of the screen. Every locator
+        // the plan can name comes from this snapshot, which is why a plan could not reach a screen
+        // that loads its own data. Wait for the fetching to stop, then until the page stops
+        // changing: idle alone still caught a half-rendered screen. Neither wait has to succeed —
+        // a page that keeps polling never goes idle, and its first paint is still worth recording.
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+        const countElements = () =>
+          page
+            .evaluate(
+              () =>
+                document.querySelectorAll(
+                  'h1,h2,h3,button,a,input,textarea,select,[role],[data-testid]',
+                ).length,
+            )
+            .catch(() => -1);
+        let stillMoving = 0;
+        for (let seen = -1, settled = 0; settled < 2;) {
+          await page.waitForTimeout(400);
+          const now = await countElements();
+          settled = now === seen ? settled + 1 : 0;
+          seen = now;
+          if (settled === 0 && ++stillMoving > 10) break;
+        }
         const raw = await page.evaluate(() => {
           const elements = [
             ...document.querySelectorAll(
