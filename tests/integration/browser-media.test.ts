@@ -14,6 +14,7 @@ import {
   captureScene,
   uniqueTarget,
   installCursor,
+  condition,
 } from '../../apps/worker/src/browser.ts';
 import {
   fixedNarration,
@@ -311,4 +312,48 @@ it('journals uncertainty when execution stops after a real create action; no dup
       )
     ).rows[0].n,
   ).toBe(1);
+}, 30000);
+
+it('checks a filled field by its value, which is where a fill actually lands', async () => {
+  const context = await browser.newContext(),
+    page = await context.newPage();
+  await page.setContent(
+    '<input id="addr"><textarea id="intent"></textarea><p id="note">고치지 않은 문단</p>',
+  );
+  const addr = 'https://example-app.test/',
+    intent = '사용자 등록 후 기본 대시보드가 뜨는지 보여주기';
+  await page.locator('#addr').fill(addr);
+  await page.locator('#intent').fill(intent);
+  const probe = {
+    ...plan,
+    locators: ['addr', 'intent', 'note'].map((n) => ({
+      id: `loc_${n}`,
+      strategy: 'css' as const,
+      value: `#${n}`,
+      role: null,
+      exact: false,
+      scopeLocatorId: null,
+      evidenceId: plan.locators[0].evidenceId,
+    })),
+  };
+  // Reading text here would see '' for the input and the empty markup for the textarea, so a plan
+  // that verifies its own fill — which is what a planner writes — could never pass.
+  for (const [locatorId, value] of [
+    ['loc_addr', addr],
+    ['loc_intent', intent],
+    ['loc_note', '고치지 않은 문단'],
+  ] as const)
+    await expect(
+      condition(page, probe, { type: 'textEquals', locatorId, value }, {}, 1000),
+    ).resolves.toBeUndefined();
+  await expect(
+    condition(
+      page,
+      probe,
+      { type: 'textEquals', locatorId: 'loc_addr', value: '다른 값' },
+      {},
+      500,
+    ),
+  ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  await context.close();
 }, 30000);

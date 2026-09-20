@@ -104,6 +104,20 @@ export function locate(page: Page, plan: Plan, id: string, outputs: Outputs): Lo
       return scope.locator(value);
   }
 }
+/**
+ * What a filled field shows lives in `value`, not in its text: an `<input>` has no text at all, and
+ * a `<textarea>` keeps only the markup's original content. Reading text alone therefore makes every
+ * `textEquals` that checks a `fill` fail no matter what was typed — which is most of them, since a
+ * plan verifies an input by naming the value it just entered.
+ */
+async function shownText(l: Locator) {
+  const tag = await l.evaluate((e) => e.tagName.toLowerCase());
+  return (
+    tag === 'input' || tag === 'textarea' || tag === 'select'
+      ? await l.inputValue()
+      : ((await l.textContent()) ?? '')
+  ).trim();
+}
 export async function condition(
   page: Page,
   plan: Plan,
@@ -129,10 +143,7 @@ export async function condition(
         );
       else if (count === 1) {
         if (c.type === 'visible' && (await l.isVisible())) return;
-        if (
-          c.type === 'textEquals' &&
-          (await l.textContent())?.trim() === resolveValue(c.value, outputs)
-        )
+        if (c.type === 'textEquals' && (await shownText(l)) === resolveValue(c.value, outputs))
           return;
       }
     }
