@@ -178,3 +178,18 @@ describe('media duration rules', () => {
   it('rejects final videos exceeding the cap', () =>
     expect(() => totalDuration([26000, 26000, 26000])).toThrow('DURATION_EXCEEDED'));
 });
+it('rejects a plan naming something that is not a URL instead of crashing on it', () => {
+  const p = samplePlan();
+  // The planner has written a regex here before; a throw would take down the whole generation.
+  p.scenes[0].actions = [
+    {
+      id: 'a_wait',
+      atMs: 0,
+      type: 'waitFor',
+      condition: { type: 'urlMatches', value: '.*[?&]plan=' },
+      timeoutMs: 5000,
+    },
+  ] as never;
+  const result = PlanSchema.safeParse(p);
+  expect(result.success).toBe(false);
+});
