@@ -22,3 +22,6 @@ minio-ca.crt
 .env*
 !.env.example
 MINIO-ENDPOINT-REQUEST.md
+
+# 개인 권한 설정 (커밋하지 않음)
+.claude/settings.local.json
