@@ -8,6 +8,40 @@ import { newContext, locate } from './browser.ts';
 import { authenticate } from './authentication.ts';
 import { validatePocPlan } from './poc-validation.ts';
 import type { Observation } from './discovery.ts';
+/**
+ * Every scene re-opens its entry URL, so nothing a scene types survives into the next one. A plan
+ * that fills a form in one scene and presses its button in another therefore submits an empty form
+ * — and that only shows up minutes into a recording, as a precondition that never comes true. The
+ * planner writes this shape often, so say it here, while the plan is still cheap to change.
+ */
+export function discardedFills(plan: Plan): ValidationReport['issues'] {
+  const issues: ValidationReport['issues'] = [];
+  const typed = new Map<string, { sceneId: string; url: string }>();
+  for (const scene of plan.scenes) {
+    // An entry URL is either a literal or a reference to an earlier scene's output; two scenes that
+    // name the same reference open the same screen, so both forms need an identity of their own.
+    const url =
+      typeof scene.entry.url === 'string'
+        ? scene.entry.url
+        : `${scene.entry.url.sceneId}.${scene.entry.url.output}`;
+    const here = new Set(
+      scene.actions.flatMap((a) => (a.type === 'fill' || a.type === 'select' ? [a.locatorId] : [])),
+    );
+    if (scene.actions.some((a) => a.type === 'click' || a.type === 'press')) {
+      const lost = [...typed.values()].find((t) => t.url === url);
+      const stale = [...typed].some(([id, t]) => t.url === url && !here.has(id));
+      if (lost && stale)
+        issues.push({
+          code: 'SCENE_STATE_NOT_CARRIED',
+          message: `${lost.sceneId} 장면에서 입력한 내용은 이 장면이 같은 화면을 다시 열면서 지워집니다. 입력과 그 입력을 쓰는 클릭은 한 장면에 두세요.`,
+          sceneId: scene.id,
+          severity: 'warning',
+        });
+    }
+    for (const id of here) typed.set(id, { sceneId: scene.id, url });
+  }
+  return issues;
+}
 export async function validatePlan(
   browser: Browser,
   db: Database,
@@ -26,6 +60,7 @@ export async function validatePlan(
     targets: [],
     issues: [],
   };
+  report.issues.push(...discardedFills(plan));
   const state = await authenticate(browser, db, cfg, plan, owner);
   const context = await newContext(browser, plan, state);
   const pages = new Map<string, Page>();
