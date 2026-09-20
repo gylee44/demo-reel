@@ -95,6 +95,17 @@ function FailureEvidence({ artifactId }: { artifactId: string }) {
     </details>
   ) : null;
 }
+/**
+ * The studio is a single page, so the screen you would want to come back to — a plan under review,
+ * a finished video — has no address of its own unless we give it one. Without that, a reload drops
+ * you back on the empty form, a link cannot be shared, and a demo cannot film the result screen
+ * without clicking through minutes of waiting to reach it.
+ */
+function searchFor(page: string, planId?: string, jobId?: string) {
+  if (page === 'progress' && jobId) return `?job=${encodeURIComponent(jobId)}`;
+  if (page === 'review' && planId) return `?plan=${encodeURIComponent(planId)}`;
+  return '';
+}
 export function App() {
   const [page, setPage] = useState<'connect' | 'review' | 'progress'>('connect'),
     [busy, setBusy] = useState(''),
@@ -139,6 +150,57 @@ export function App() {
   useEffect(() => {
     let active = true;
     const restore = async () => {
+      // An address wins over this tab's memory: it is what the visitor asked for.
+      const linked = new URLSearchParams(location.search),
+        linkedJob = linked.get('job'),
+        linkedPlan = linked.get('plan');
+      if (linkedJob || linkedPlan) {
+        busyRef.current = true;
+        setBusy(linkedJob ? '작업을 불러오고 있어요.' : '계획을 불러오고 있어요.');
+        try {
+          if (linkedJob) {
+            const previous = await api<Job>(`/jobs/${encodeURIComponent(linkedJob)}`),
+              result = await api(`/plans/${previous.planId}?revision=${previous.revision}`),
+              mine = await api<{ projects: { jobs: { jobId: string; approvalId: string }[] }[] }>(
+                '/projects',
+              );
+            if (!active) return;
+            setPlan(result.plan);
+            setMode(result.plan.auth.mode);
+            setProjectId(result.plan.projectId);
+            setEffectsHash(result.effectsHash);
+            setApprovalId(
+              mine.projects.flatMap((x) => x.jobs).find((j) => j.jobId === linkedJob)?.approvalId ??
+                '',
+            );
+            setJob(previous);
+            setPage('progress');
+          } else {
+            const result = await api(`/plans/${encodeURIComponent(linkedPlan!)}`);
+            if (!active) return;
+            setPlan(result.plan);
+            setMode(result.plan.auth.mode);
+            setProjectId(result.plan.projectId);
+            setEffectsHash(result.effectsHash);
+            setPage('review');
+            // A link carries the plan but not the check that lets it be approved, so run one.
+            const pending = await api(`/plans/${result.plan.planId}/validations`, 'POST', {
+                revision: result.plan.revision,
+              }),
+              op = await operation(pending.operationId);
+            if (!active) return;
+            setReport(await api(`/validations/${op.reportId}`));
+          }
+        } catch (e) {
+          if (active) setError((e as Error).message);
+        } finally {
+          if (active) {
+            busyRef.current = false;
+            setBusy('');
+          }
+        }
+        return;
+      }
       const pending = sessionStorage.getItem('demo-reel:operation');
       if (pending) {
         busyRef.current = true;
@@ -195,6 +257,10 @@ export function App() {
     if (job && approvalId)
       sessionStorage.setItem('demo-reel:job', JSON.stringify({ jobId: job.jobId, approvalId }));
   }, [job?.jobId, approvalId]);
+  useEffect(() => {
+    const search = searchFor(page, plan?.planId, job?.jobId);
+    if (location.search !== search) history.replaceState(null, '', location.pathname + search);
+  }, [page, plan?.planId, job?.jobId]);
   async function work(label: string, fn: () => Promise<void>) {
     if (busyRef.current) return;
     busyRef.current = true;
