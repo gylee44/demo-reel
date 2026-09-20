@@ -37,6 +37,25 @@ import {
 } from './browser.ts';
 import { renderScene, compose, storeArtifact, writeManifest, type Narration } from './media.ts';
 const uid = (s: string) => `${s}_${randomUUID()}`;
+class LeaseLostError extends Error {}
+function leaseHeartbeat(
+  db: Database,
+  kind: 'job' | 'operation',
+  id: string,
+  owner: string,
+  workerId: string,
+) {
+  let lost = false;
+  const timer = setInterval(() => {
+    db.touchLease(kind, id, owner, workerId)
+      .then((owned) => {
+        if (!owned) lost = true;
+      })
+      .catch((error) => console.error(`[worker] ${kind} lease heartbeat failed id=${id}`, error));
+  }, 10000);
+  timer.unref();
+  return { stop: () => clearInterval(timer), lost: () => lost };
+}
 function failure(error: unknown, sceneId: string | null = null): Failure {
   // An unexpected error is replaced by a generic message for the user, so the worker log is the
   // only place its cause survives. Without this there is nothing to debug a production failure with.
@@ -60,11 +79,25 @@ function failure(error: unknown, sceneId: string | null = null): Failure {
         : '계획과 테스트 앱 상태를 확인하고 필요한 장면만 다시 만들어 주세요.',
   };
 }
-export async function processOperation(db: Database, cfg: Config, id: string, owner: string) {
-  const op = await db.get<Operation>('operation', id, owner);
-  if (!op || op.status !== 'queued') return;
-  op.status = 'running';
-  await db.put('operation', id, owner, op, op.projectId);
+export async function processOperation(
+  db: Database,
+  cfg: Config,
+  id: string,
+  owner: string,
+  workerId = `worker-${process.pid}`,
+) {
+  const op = await db.tx(async (c) => {
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [owner]);
+    const fresh = await db.get<Operation>('operation', id, owner, c);
+    if (!fresh || fresh.status !== 'queued') return null;
+    fresh.status = 'running';
+    fresh.workerId = workerId;
+    fresh.heartbeatAt = new Date().toISOString();
+    await db.put('operation', id, owner, fresh, fresh.projectId, c);
+    return fresh;
+  });
+  if (!op) return;
+  const lease = leaseHeartbeat(db, 'operation', id, owner, workerId);
   let browser: Browser | undefined;
   try {
     browser = await launchBrowser(cfg);
@@ -117,14 +150,21 @@ export async function processOperation(db: Database, cfg: Config, id: string, ow
     const f = failure(e);
     op.error = { code: f.code, message: f.message };
   } finally {
+    lease.stop();
     await browser?.close();
-    await db.put('operation', id, owner, op, op.projectId);
+    await db.tx(async (c) => {
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [owner]);
+      const latest = await db.get<Operation>('operation', id, owner, c);
+      if (latest?.workerId !== workerId || lease.lost()) return;
+      await db.put('operation', id, owner, op, op.projectId, c);
+    });
   }
 }
 async function persist(db: Database, record: InternalJob) {
   await db.tx(async (c) => {
     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [record.owner]);
     const latest = await db.get<InternalJob>('job', record.snapshot.jobId, record.owner, c);
+    if (!latest || latest.workerId !== record.workerId) throw new LeaseLostError('job lease lost');
     if (latest?.cancelRequested) record.cancelRequested = true;
     record.snapshot.version = (latest?.snapshot.version ?? record.snapshot.version) + 1;
     record.snapshot.completedSceneCount = record.snapshot.sceneAttempts.filter(
@@ -134,41 +174,61 @@ async function persist(db: Database, record: InternalJob) {
     await db.put('job', record.snapshot.jobId, record.owner, record, record.projectId, c);
   });
 }
-export async function recoverInterrupted(db: Database) {
+export async function recoverInterrupted(db: Database, leaseTimeoutMs = 90000) {
+  const expired = (heartbeatAt?: string) =>
+    !heartbeatAt || Date.parse(heartbeatAt) <= Date.now() - leaseTimeoutMs;
   for (const record of await db.list<InternalJob>('job'))
-    if (record.snapshot.status === 'running') {
-      record.snapshot.status = 'needs_action';
-      record.snapshot.failure = failure(
-        new AppError(
-          'WORKER_INTERRUPTED',
-          '실행 프로세스가 중단되었습니다. 실제 앱의 변경 상태를 확인해 주세요.',
-        ),
-      );
-      for (const a of record.snapshot.sceneAttempts)
-        if (a.status === 'running') {
-          a.status = 'failed';
-          a.failure = record.snapshot.failure;
-        }
-      if (record.plan.auth.authRef) await db.remove('auth', record.plan.auth.authRef, record.owner);
-      await persist(db, record);
-    }
+    if (record.snapshot.status === 'running' && expired(record.heartbeatAt))
+      await db.tx(async (c) => {
+        await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [record.owner]);
+        const fresh = await db.get<InternalJob>('job', record.snapshot.jobId, record.owner, c);
+        if (!fresh || fresh.snapshot.status !== 'running' || !expired(fresh.heartbeatAt)) return;
+        fresh.snapshot.status = 'needs_action';
+        fresh.snapshot.failure = failure(
+          new AppError(
+            'WORKER_INTERRUPTED',
+            '실행 프로세스가 중단되었습니다. 실제 앱의 변경 상태를 확인해 주세요.',
+          ),
+        );
+        for (const a of fresh.snapshot.sceneAttempts)
+          if (a.status === 'running') {
+            a.status = 'failed';
+            a.failure = fresh.snapshot.failure;
+          }
+        delete fresh.workerId;
+        delete fresh.heartbeatAt;
+        if (fresh.plan.auth.authRef)
+          await db.remove('auth', fresh.plan.auth.authRef, fresh.owner, c);
+        await db.put('job', fresh.snapshot.jobId, fresh.owner, fresh, fresh.projectId, c);
+      });
   for (const op of await db.list<Operation>('operation'))
-    if (op.status === 'running') {
-      op.status = 'failed';
-      op.error = {
-        code: 'WORKER_INTERRUPTED',
-        message: '계획 처리 중 실행 프로세스가 중단되었습니다. 다시 요청해 주세요.',
-      };
-      await db.put('operation', op.operationId, op.owner, op, op.projectId);
-    }
+    if (op.status === 'running' && expired(op.heartbeatAt))
+      await db.tx(async (c) => {
+        await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [op.owner]);
+        const fresh = await db.get<Operation>('operation', op.operationId, op.owner, c);
+        if (!fresh || fresh.status !== 'running' || !expired(fresh.heartbeatAt)) return;
+        fresh.status = 'failed';
+        fresh.error = {
+          code: 'WORKER_INTERRUPTED',
+          message: '계획 처리 중 실행 프로세스가 중단되었습니다. 다시 요청해 주세요.',
+        };
+        delete fresh.workerId;
+        delete fresh.heartbeatAt;
+        await db.put('operation', fresh.operationId, fresh.owner, fresh, fresh.projectId, c);
+      });
 }
 export async function runJob(
   db: Database,
   cfg: Config,
   id: string,
   owner: string,
-  options: { crashAfterAction?: string; browserFactory?: typeof launchBrowser } = {},
+  options: {
+    crashAfterAction?: string;
+    browserFactory?: typeof launchBrowser;
+    workerId?: string;
+  } = {},
 ) {
+  const workerId = options.workerId ?? `worker-${process.pid}`;
   let record = await db.get<InternalJob>('job', id, owner);
   if (!record || record.snapshot.status !== 'queued') return;
   const claimed = await db.tx(async (c) => {
@@ -177,16 +237,20 @@ export async function runJob(
     if (!fresh || fresh.snapshot.status !== 'queued') return null;
     fresh.snapshot.status = 'running';
     fresh.snapshot.version++;
+    fresh.workerId = workerId;
+    fresh.heartbeatAt = new Date().toISOString();
     await db.put('job', id, owner, fresh, fresh.projectId, c);
     return fresh;
   });
   if (!claimed) return;
   record = claimed;
+  const lease = leaseHeartbeat(db, 'job', id, owner, workerId);
   const job = record.snapshot,
     plan = PlanSchema.parse(record.plan),
     dir = join(cfg.dataDir, 'jobs', id);
   await mkdir(dir, { recursive: true });
   let browser: Browser | undefined;
+  let lostLease = false;
   const started = Date.now();
   const outputs: Outputs = {};
   try {
@@ -234,9 +298,11 @@ export async function runJob(
       }
     }
     async function check() {
+      if (lease.lost()) throw new LeaseLostError('job lease lost');
       if (Date.now() - started > 600000)
         throw new AppError('ACTION_TIMEOUT', '전체 작업 실행 시간이 초과되었습니다.');
       const latest = await db.get<InternalJob>('job', id, owner);
+      if (latest?.workerId !== workerId) throw new LeaseLostError('job lease lost');
       if (latest?.cancelRequested) throw new AppError('CANCELLED', '사용자가 작업을 취소했습니다.');
       if (captureIds.size && plan.auth.authRef) {
         const auth = await db.get<any>('auth', plan.auth.authRef, owner);
@@ -505,12 +571,24 @@ export async function runJob(
       });
     }
   } catch (error) {
-    job.status =
-      error instanceof AppError && error.code === 'CANCELLED' ? 'cancelled' : 'needs_action';
-    job.failure = failure(error);
+    if (error instanceof LeaseLostError) {
+      lostLease = true;
+      console.error(`[worker] lease lost; abandoning job id=${id} worker=${workerId}`);
+    } else {
+      job.status =
+        error instanceof AppError && error.code === 'CANCELLED' ? 'cancelled' : 'needs_action';
+      job.failure = failure(error);
+    }
   } finally {
+    lease.stop();
     await browser?.close().catch(() => {});
-    if (plan.auth.authRef) await db.remove('auth', plan.auth.authRef, owner);
-    await persist(db, record);
+    if (!lostLease && !lease.lost()) {
+      if (plan.auth.authRef) await db.remove('auth', plan.auth.authRef, owner);
+      try {
+        await persist(db, record);
+      } catch (error) {
+        if (!(error instanceof LeaseLostError)) throw error;
+      }
+    }
   }
 }

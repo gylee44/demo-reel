@@ -9,13 +9,12 @@ const url = z.url().refine((value) => {
   // The refinement still runs when the base check has already failed, and a throw here escapes
   // safeParse: a plan naming something that is not a URL at all would crash the generation that
   // was meant to reject it. Decide it here instead.
-  let u: URL;
   try {
-    u = new URL(value);
+    const u = new URL(value);
+    return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password;
   } catch {
     return false;
   }
-  return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password;
 }, 'Only HTTP(S) URLs without credentials are allowed');
 export const ValueSchema = z.union([
   z.string().max(4000),

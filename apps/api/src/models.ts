@@ -41,6 +41,8 @@ export type Operation = {
   authRef?: string;
   reportId?: string;
   error?: { code: string; message: string };
+  workerId?: string;
+  heartbeatAt?: string;
 };
 export type InternalJob = {
   owner: string;
@@ -52,6 +54,7 @@ export type InternalJob = {
   baseJobId?: string;
   recovery?: RecoveryPreview;
   queueId?: string;
+  workerId?: string;
   heartbeatAt?: string;
   reservation: boolean;
 };

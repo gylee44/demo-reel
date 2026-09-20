@@ -55,6 +55,7 @@ export function config() {
     // lane is what a Raspberry Pi has; raise it with the box, not with optimism.
     planConcurrency: positive('PLAN_CONCURRENCY', 2),
     recordConcurrency: positive('RECORD_CONCURRENCY', 1),
+    workerLeaseMs: milliseconds('WORKER_LEASE_MS', 90000),
     pocMode,
     openaiKey: process.env.OPENAI_API_KEY || '',
     plannerModel: process.env.OPENAI_PLANNER_MODEL || 'gpt-5-mini',
@@ -72,5 +73,11 @@ export function config() {
 function positive(name: string, fallback: number) {
   const value = Number(process.env[name] || fallback);
   if (!Number.isInteger(value) || value < 1 || value > 10000) throw new Error(`Invalid ${name}`);
+  return value;
+}
+function milliseconds(name: string, fallback: number) {
+  const value = Number(process.env[name] || fallback);
+  if (!Number.isInteger(value) || value < 30000 || value > 600000)
+    throw new Error(`Invalid ${name}`);
   return value;
 }

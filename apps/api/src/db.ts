@@ -70,6 +70,17 @@ export class Database {
   async remove(kind: string, id: string, owner: string, c: Queryable = this.pool) {
     await c.query('DELETE FROM dr_records WHERE kind=$1 AND id=$2 AND owner=$3', [kind, id, owner]);
   }
+  async touchLease(kind: string, id: string, owner: string, workerId: string) {
+    const r = await this.pool.query(
+      `UPDATE dr_records
+       SET document=jsonb_set(document,'{heartbeatAt}',to_jsonb($5::text),true),
+           version=version+1,updated_at=now()
+       WHERE kind=$1 AND id=$2 AND owner=$3 AND document->>'workerId'=$4
+       RETURNING 1`,
+      [kind, id, owner, workerId, new Date().toISOString()],
+    );
+    return r.rowCount === 1;
+  }
   async list<T>(kind: string, owner?: string): Promise<T[]> {
     const r = await this.pool.query(
       'SELECT document FROM dr_records WHERE kind=$1' +

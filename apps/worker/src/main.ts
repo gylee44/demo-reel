@@ -3,30 +3,13 @@ import { config } from '../../api/src/config.ts';
 import { Database, createQueue, PLAN_QUEUE, RECORD_QUEUE } from '../../api/src/db.ts';
 import { processOperation, runJob, recoverInterrupted } from './runner.ts';
 import { createServer } from 'node:http';
+import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
 const cfg = config(),
-  db = new Database(cfg.databaseUrl);
+  db = new Database(cfg.databaseUrl),
+  workerId = process.env.WORKER_ID || `${hostname()}:${process.pid}:${randomUUID()}`;
 await db.init();
-// One browser/encoding worker owns the entire execution lane, including after restarts.
-const lease = await db.pool.connect();
-// A killed worker leaves this session lock held until Postgres notices the dead connection, so a
-// redeploy finds the lane taken for a while. Waiting beats exiting: the replacement takes over as
-// soon as the old session goes, instead of relying on restart backoff to try again.
-let acquired = false;
-for (let attempt = 0; attempt < 30 && !acquired; attempt++) {
-  acquired = (await lease.query('SELECT pg_try_advisory_lock(73480219) AS acquired')).rows[0]
-    .acquired;
-  if (!acquired) {
-    if (attempt === 0) console.error('Execution lane busy; waiting for the previous worker to go.');
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-}
-if (!acquired) {
-  console.error('Another Demo Reel worker still owns the execution lane after 150s.');
-  lease.release();
-  await db.close();
-  process.exit(1);
-}
-await recoverInterrupted(db);
+await recoverInterrupted(db, cfg.workerLeaseMs);
 await cleanupExpired(db, cfg);
 await heartbeat(db, cfg);
 const pulse = setInterval(() => {
@@ -42,6 +25,16 @@ const maintenance = setInterval(() => {
       cleaning = false;
     });
 }, 300000);
+let recovering = false;
+const recovery = setInterval(() => {
+  if (recovering) return;
+  recovering = true;
+  recoverInterrupted(db, cfg.workerLeaseMs)
+    .catch(() => process.stderr.write('Lease recovery failed\n'))
+    .finally(() => {
+      recovering = false;
+    });
+}, 30000);
 const queue = await createQueue(cfg.databaseUrl);
 type Task = { type: 'operation' | 'job'; id: string; owner: string };
 const lane = (name: string, localConcurrency: number, run: (task: Task) => Promise<void>) =>
@@ -52,30 +45,30 @@ const lane = (name: string, localConcurrency: number, run: (task: Task) => Promi
 // so nothing already waiting is stranded by a deploy.
 await lane(RECORD_QUEUE, cfg.recordConcurrency, async (task) =>
   task.type === 'operation'
-    ? processOperation(db, cfg, task.id, task.owner)
+    ? processOperation(db, cfg, task.id, task.owner, workerId)
     : runJob(db, cfg, task.id, task.owner, {
         crashAfterAction: process.env.POC_CRASH_AFTER_ACTION,
+        workerId,
       }),
 );
 await lane(PLAN_QUEUE, cfg.planConcurrency, (task) =>
-  processOperation(db, cfg, task.id, task.owner),
+  processOperation(db, cfg, task.id, task.owner, workerId),
 );
 console.log(
-  `Demo Reel worker ready: record=${cfg.recordConcurrency}, plan=${cfg.planConcurrency}, browser auto-retry=0`,
+  `Demo Reel worker ready: id=${workerId} record=${cfg.recordConcurrency}, plan=${cfg.planConcurrency}, browser auto-retry=0`,
 );
 const health = createServer((_req, res) => {
   res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ status: 'ok' }));
+  res.end(JSON.stringify({ status: 'ok', workerId }));
 });
 health.listen(Number(process.env.WORKER_HEALTH_PORT ?? 4002), cfg.host);
 for (const signal of ['SIGINT', 'SIGTERM'] as const)
   process.on(signal, async () => {
     clearInterval(pulse);
     clearInterval(maintenance);
+    clearInterval(recovery);
     health.close();
     await queue.stop({ graceful: true, timeout: 15000 });
-    await lease.query('SELECT pg_advisory_unlock(73480219)');
-    lease.release();
     await db.close();
     process.exit(0);
   });
